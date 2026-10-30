@@ -1,0 +1,42 @@
+{
+  "name": "hardware-erp",
+  "version": "1.0.0",
+  "description": "ERP for a hardware shop. Runs as a desktop app that works offline and syncs with a hosted server when one is configured, or as a web server.",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "desktop/main.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node bin/erp-server.js",
+    "start:desktop": "electron desktop/main.js",
+    "test": "node --test test/*.test.js",
+    "build:desktop": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.hardwares.erp",
+    "productName": "Hardware ERP",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
