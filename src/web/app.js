@@ -279,6 +279,7 @@
   // Mirrors src/core/sales.js. The server recalculates everything when the sale is saved.
   function lineTotals(line) {
     const amount = Math.round(line.qty * line.unitPrice * (1 - line.discountPct / 100));
+    if (!state.settings.gst_billing) return { net: amount, tax: 0, total: amount };
     if (state.settings.prices_include_gst) {
       const net = Math.round((amount * 100) / (100 + line.taxRate));
       return { net, tax: amount - net, total: amount };
@@ -375,7 +376,7 @@
     const due = Math.max(t.total - received, 0);
     el.innerHTML = `<div class="totals">
       <span>Subtotal</span><span class="num">${money(t.subtotal)}</span>
-      <span>GST</span><span class="num">${money(t.tax)}</span>
+      ${state.settings.gst_billing ? `<span>GST</span><span class="num">${money(t.tax)}</span>` : ''}
       ${t.roundOff ? `<span>Round off</span><span class="num">${money(t.roundOff)}</span>` : ''}
       <span class="grand">Total</span><span class="num grand">${money(t.total)}</span>
       ${received > 0 ? `<span>Received</span><span class="num">${money(received)}</span>` : ''}
@@ -514,11 +515,27 @@
     state.sale = s;
     const isInvoice = s.type === 'invoice';
     const isOpenQuote = s.type === 'quote' && s.status === 'open';
-    const heading = { invoice: 'Tax invoice', return: 'Credit note', quote: 'Quotation' }[s.type];
+    const gst = !!s.gst_applied;
+    const heading = gst
+      ? { invoice: 'Tax invoice', return: 'Credit note', quote: 'Quotation' }[s.type]
+      : { invoice: 'Bill of supply', return: 'Refund note', quote: 'Quotation' }[s.type];
     const showReturnForm = isInvoice && s.status === 'posted' && s.lines.length > 0;
     const gstRows = s.is_interstate
       ? [['IGST', s.igst_total]]
       : [['CGST', s.cgst_total], ['SGST', s.sgst_total]];
+    const columns = [
+      { label: 'Item', render: (r) => esc(r.description) },
+      ...(gst ? [{ label: 'HSN', render: (r) => esc(r.hsn_code || '—') }] : []),
+      { label: 'Qty', num: true, render: (r) => num(r.qty) },
+      { label: 'Rate', num: true, render: (r) => money(r.unit_price) },
+      { label: 'Disc %', num: true, render: (r) => num(r.discount_pct) },
+      ...(gst ? [
+        { label: 'Taxable', num: true, render: (r) => money(r.net) },
+        { label: 'GST %', num: true, render: (r) => num(r.tax_rate) },
+        { label: 'GST', num: true, render: (r) => money(r.tax_amount) },
+      ] : []),
+      { label: 'Amount', num: true, render: (r) => money(r.total) },
+    ];
     return {
       html: `<div class="toolbar no-print">
           <a href="#/${s.type === 'quote' ? 'quotes' : 'sales'}">← Back</a>
@@ -532,32 +549,22 @@
           <div class="head">
             <h1>${esc(s.seller?.name || state.settings.company_name)}</h1>
             <div class="muted">${esc(state.settings.company_address || '')}${state.settings.company_phone ? ` · ${esc(state.settings.company_phone)}` : ''}</div>
-            ${s.seller?.gstin ? `<div class="muted">GSTIN ${esc(s.seller.gstin)} · ${esc(stateName(s.seller.state_code))}</div>` : ''}
+            ${gst && s.seller?.gstin ? `<div class="muted">GSTIN ${esc(s.seller.gstin)} · ${esc(stateName(s.seller.state_code))}</div>` : ''}
             <h2 style="margin-top:12px">${esc(heading)} ${esc(s.number)} ${statusBadge(s.status)}</h2>
           </div>
           <div class="meta">
             <div><strong>Bill to:</strong> ${esc(s.customer_name || 'Walk-in customer')}
               ${s.customer?.address ? `<br>${esc(s.customer.address)}` : ''}
-              ${s.customer_gstin ? `<br>GSTIN ${esc(s.customer_gstin)}` : ''}</div>
-            <div><strong>Date:</strong> ${esc(dateOnly(s.date))}<br>
-              <strong>Place of supply:</strong> ${esc(stateName(s.place_of_supply || s.seller?.state_code))}</div>
+              ${gst && s.customer_gstin ? `<br>GSTIN ${esc(s.customer_gstin)}` : ''}</div>
+            <div><strong>Date:</strong> ${esc(dateOnly(s.date))}${gst ? `<br>
+              <strong>Place of supply:</strong> ${esc(stateName(s.place_of_supply || s.seller?.state_code))}` : ''}</div>
           </div>
-          ${table([
-            { label: 'Item', render: (r) => esc(r.description) },
-            { label: 'HSN', render: (r) => esc(r.hsn_code || '—') },
-            { label: 'Qty', num: true, render: (r) => num(r.qty) },
-            { label: 'Rate', num: true, render: (r) => money(r.unit_price) },
-            { label: 'Disc %', num: true, render: (r) => num(r.discount_pct) },
-            { label: 'Taxable', num: true, render: (r) => money(r.net) },
-            { label: 'GST %', num: true, render: (r) => num(r.tax_rate) },
-            { label: 'GST', num: true, render: (r) => money(r.tax_amount) },
-            { label: 'Amount', num: true, render: (r) => money(r.total) },
-          ], s.lines, { empty: 'No lines' })}
+          ${table(columns, s.lines, { empty: 'No lines' })}
           <div class="totals" style="margin:16px 0 0 auto;max-width:380px">
-            <span>Taxable value</span><span class="num">${money(s.subtotal)}</span>
-            ${gstRows.filter(([, v]) => v).map(([name, v]) => `<span>${name}</span><span class="num">${money(v)}</span>`).join('')}
+            ${gst ? `<span>Taxable value</span><span class="num">${money(s.subtotal)}</span>
+              ${gstRows.filter(([, v]) => v).map(([name, v]) => `<span>${name}</span><span class="num">${money(v)}</span>`).join('')}` : ''}
             ${s.round_off ? `<span>Round off</span><span class="num">${money(s.round_off)}</span>` : ''}
-            <span class="grand">${s.type === 'return' ? 'Credit amount' : 'Total'}</span><span class="num grand">${money(s.total)}</span>
+            <span class="grand">${s.type === 'return' ? 'Refund amount' : 'Total'}</span><span class="num grand">${money(s.total)}</span>
             ${s.type !== 'quote' ? `<span>${s.type === 'return' ? 'Refunded' : 'Received'}</span><span class="num">${money(s.type === 'return' ? -s.settled : s.settled)}</span>` : ''}
             ${isInvoice && s.due > 0 ? `<span><strong>Balance due</strong></span><span class="num"><strong>${money(s.due)}</strong></span>` : ''}
           </div>
@@ -568,7 +575,7 @@
             { label: 'Kind', render: (r) => esc(r.kind) },
             { label: 'Amount', num: true, render: (r) => money(r.amount) },
           ], s.payments)}` : ''}
-          ${s.returns.length ? `<h2 style="margin-top:16px">Credit notes</h2>${table([
+          ${s.returns.length ? `<h2 style="margin-top:16px">${gst ? 'Credit notes' : 'Refund notes'}</h2>${table([
             { label: 'Number', render: (r) => esc(r.number) },
             { label: 'Date', render: (r) => esc(dateOnly(r.date)) },
             { label: 'Total', num: true, render: (r) => money(r.total) },
@@ -675,7 +682,9 @@
             <label>Unit <input name="unit" value="${esc(product.unit || 'pcs')}" ${dis}></label>
             <label>Cost <input class="money" name="cost" data-kind="money" type="number" step="0.01" min="0" value="${amount(product.cost)}" ${dis}></label>
             <label>Selling price <input class="money" name="price" data-kind="money" type="number" step="0.01" min="0" value="${amount(product.price)}" ${dis}></label>
-            <label>GST rate <select name="tax_rate" data-kind="num" ${dis}>${gstOptions(product.tax_rate ?? state.settings.default_tax_rate)}</select></label>
+            ${state.settings.gst_billing
+              ? `<label>GST rate <select name="tax_rate" data-kind="num" ${dis}>${gstOptions(product.tax_rate ?? state.settings.default_tax_rate)}</select></label>`
+              : `<input type="hidden" name="tax_rate" data-kind="num" value="${product.tax_rate ?? 0}"><p class="muted">GST is off. Prices are final.</p>`}
             <label>Reorder level <input name="reorder_level" data-kind="num" type="number" step="0.001" min="0" value="${product.reorder_level ?? 0}" ${dis}></label>
             <label>Shelf location <input name="location" value="${esc(product.location || '')}" ${dis}></label>
           </div>
@@ -1032,7 +1041,7 @@
     const type = query.get('type') || 'profit';
     const filters = { from: query.get('from') || monthStart(), to: query.get('to') || today(), type };
     const range = new URLSearchParams({ from: filters.from, to: filters.to });
-    const tabs = [['profit', 'Profit & loss'], ['sales', 'Sales by day'], ['gst', 'GST returns'], ['top', 'Top products'], ['valuation', 'Stock valuation'], ['receivables', 'Receivables'], ['payables', 'Payables']];
+    const tabs = [['profit', 'Profit & loss'], ['sales', 'Sales by day'], ...(state.settings.gst_billing ? [['gst', 'GST returns']] : []), ['top', 'Top products'], ['valuation', 'Stock valuation'], ['receivables', 'Receivables'], ['payables', 'Payables']];
     let body = '';
     let csv = null;
 
@@ -1067,6 +1076,8 @@
         { label: 'Gross profit', num: true, render: (r) => money(r.gross_profit) },
       ], rows, { empty: 'No sales in this period.' });
       csv = { headers: ['Product', 'SKU', 'Qty', 'Revenue', 'Cost', 'Gross profit'], rows: rows.map((r) => [r.name, r.sku, r.qty, amount(r.revenue), amount(r.cost), amount(r.gross_profit)]) };
+    } else if (type === 'gst' && !state.settings.gst_billing) {
+      body = '<p class="muted">GST billing is off, so there are no GST returns. Turn it on in Settings.</p>';
     } else if (type === 'gst') {
       const g = await api('GET', `/reports/gst?${range}`);
       const gstRow = (label, o) => `<tr><td>${label}</td><td class="num">${money(o.taxable)}</td>
@@ -1184,6 +1195,8 @@
             <label>Default GST rate for new products <select name="default_tax_rate" data-kind="num">${gstOptions(s.default_tax_rate)}</select></label>
           </div>
           <label style="margin-top:12px">Receipt footer <input name="receipt_footer" value="${esc(s.receipt_footer)}"></label>
+          <label class="inline" style="margin-top:12px"><input type="checkbox" name="gst_billing" ${s.gst_billing ? 'checked' : ''}> Charge GST and issue tax invoices (turn off if the shop is not registered for GST)</label>
+          ${s.gst_billing ? '' : '<p class="muted">Sales are billed as a bill of supply with no tax. GSTIN, GST rates and the GST return are hidden until GST billing is turned on again. Earlier tax invoices keep their tax.</p>'}
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="prices_include_gst" ${s.prices_include_gst ? 'checked' : ''}> Selling prices include GST (MRP style)</label>
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="round_invoice_totals" ${s.round_invoice_totals ? 'checked' : ''}> Round invoice totals to the rupee</label>
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="allow_negative_stock" ${s.allow_negative_stock ? 'checked' : ''}> Allow selling items that are out of stock</label>

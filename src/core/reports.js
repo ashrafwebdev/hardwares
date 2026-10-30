@@ -7,6 +7,8 @@ const { customerBalance, supplierBalance, customerAging } = require('./ledger');
 function createReports({ db, repo, inventory, sales }) {
   const sign = (alias) => `(CASE WHEN ${alias}.type = 'invoice' THEN 1 ELSE -1 END)`;
   const POSTED_SALES = "d.deleted = 0 AND d.status = 'posted' AND d.type IN ('invoice', 'return') AND d.date BETWEEN ? AND ?";
+  // GST figures only cover documents that were billed with GST.
+  const GST_SALES = `${POSTED_SALES} AND d.gst_applied = 1`;
 
   function netSales(from, to) {
     return db.prepare(`SELECT COALESCE(SUM(${sign('d')} * d.total), 0) AS n FROM sales_docs d WHERE ${POSTED_SALES}`)
@@ -148,7 +150,7 @@ function createReports({ db, repo, inventory, sales }) {
               COALESCE(SUM(${sign('d')} * d.cgst_total), 0) AS cgst,
               COALESCE(SUM(${sign('d')} * d.sgst_total), 0) AS sgst,
               COALESCE(SUM(${sign('d')} * d.igst_total), 0) AS igst
-         FROM sales_docs d WHERE ${POSTED_SALES}`,
+         FROM sales_docs d WHERE ${GST_SALES}`,
     ).get(from, to);
     const inward = db.prepare(
       `SELECT COALESCE(SUM(subtotal), 0) AS taxable, COALESCE(SUM(cgst_total), 0) AS cgst,
@@ -168,7 +170,7 @@ function createReports({ db, repo, inventory, sales }) {
          FROM sales_lines l
          JOIN sales_docs d ON d.id = l.doc_id
          LEFT JOIN products p ON p.id = l.product_id
-        WHERE l.deleted = 0 AND ${POSTED_SALES}
+        WHERE l.deleted = 0 AND ${GST_SALES}
         GROUP BY COALESCE(l.hsn_code, ''), l.tax_rate ORDER BY COALESCE(l.hsn_code, ''), l.tax_rate`,
     ).all(from, to);
 
@@ -178,7 +180,7 @@ function createReports({ db, repo, inventory, sales }) {
               ${sign('d')} * d.total AS total
          FROM sales_docs d LEFT JOIN customers c ON c.id = d.customer_id
         WHERE d.deleted = 0 AND d.status = 'posted' AND d.type = ? AND d.customer_gstin IS NOT NULL
-          AND d.date BETWEEN ? AND ?
+          AND d.gst_applied = 1 AND d.date BETWEEN ? AND ?
         ORDER BY d.date, d.number`,
     ).all(type, from, to);
 
@@ -187,7 +189,7 @@ function createReports({ db, repo, inventory, sales }) {
               COALESCE(SUM(tax_total), 0) AS tax, COALESCE(SUM(total), 0) AS total
          FROM sales_docs
         WHERE deleted = 0 AND status = 'posted' AND type = 'invoice' AND customer_gstin IS NULL
-          AND date BETWEEN ? AND ?`,
+          AND gst_applied = 1 AND date BETWEEN ? AND ?`,
     ).get(from, to);
 
     const outwardTax = Math.round(outward.cgst + outward.sgst + outward.igst);

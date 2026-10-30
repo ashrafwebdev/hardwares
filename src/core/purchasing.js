@@ -28,7 +28,8 @@ function createPurchasing({ db, repo, tx, nextNumber, inventory, settings }) {
       ensure(qty > 0, `Quantity for ${product.name} must be greater than zero`);
       const unitCost = cents(input.unitCost ?? product.cost, 'Unit cost');
       ensure(unitCost >= 0, 'Unit cost cannot be negative');
-      const taxRate = rate(input.taxRate ?? product.tax_rate);
+      // With GST billing off the shop is not registered, so no input credit is taken.
+      const taxRate = settings.get('gst_billing') ? rate(input.taxRate ?? product.tax_rate) : 0;
       const net = Math.round(qty * unitCost);
       const taxAmount = Math.round((net * taxRate) / 100);
       const split = splitTax(taxAmount, interstate);

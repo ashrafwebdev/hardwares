@@ -44,7 +44,7 @@ const SYNCED = {
   sales_docs: {
     id: 'TEXT', number: 'TEXT', type: 'TEXT', status: 'TEXT', date: 'TEXT',
     customer_id: 'TEXT', customer_gstin: 'TEXT', warehouse_id: 'TEXT', ref_doc_id: 'TEXT',
-    place_of_supply: 'TEXT', is_interstate: 'INTEGER', round_off: 'INTEGER',
+    place_of_supply: 'TEXT', is_interstate: 'INTEGER', gst_applied: 'INTEGER', round_off: 'INTEGER',
     cgst_total: 'INTEGER', sgst_total: 'INTEGER', igst_total: 'INTEGER',
     subtotal: 'INTEGER', tax_total: 'INTEGER', total: 'INTEGER',
     payment_method: 'TEXT', note: 'TEXT', created_by: 'TEXT', created_at: 'TEXT',

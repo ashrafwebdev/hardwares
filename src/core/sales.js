@@ -49,14 +49,15 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
   }
 
   // Price one line. Anything the caller omits comes from the product.
-  function priceLine(product, input, { inclusive, interstate }) {
+  // gst = false produces a plain bill of supply: no tax, no GST split.
+  function priceLine(product, input, { inclusive, interstate, gst }) {
     const qty = qtyOf(input.qty);
     ensure(qty > 0, `Quantity for ${product.name} must be greater than zero`);
     const unitPrice = cents(input.unitPrice ?? product.price, 'Unit price');
     ensure(unitPrice >= 0, 'Unit price cannot be negative');
     const discount = Number(input.discountPct ?? 0);
     ensure(discount >= 0 && discount <= 100, 'Discount must be between 0 and 100%');
-    const taxRate = rate(input.taxRate ?? product.tax_rate);
+    const taxRate = gst ? rate(input.taxRate ?? product.tax_rate) : 0;
     const amount = Math.round(qty * unitPrice * (1 - discount / 100));
     const { taxable, tax } = splitAmount(amount, taxRate, inclusive);
     const split = splitTax(tax, interstate);
@@ -106,8 +107,8 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       .filter((p) => p.amount > 0);
   }
 
-  function pricingOptions(interstate) {
-    return { inclusive: !!settings.get('prices_include_gst'), interstate };
+  function pricingOptions(interstate, gst = settings.get('gst_billing')) {
+    return { inclusive: !!settings.get('prices_include_gst'), interstate, gst: !!gst };
   }
 
   function buildLines(inputs, options) {
@@ -132,7 +133,8 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       status,
       date,
       customer_id: customer ? customer.id : null,
-      customer_gstin: customer ? customer.gstin || null : null,
+      customer_gstin: customer && supply.gst ? customer.gstin || null : null,
+      gst_applied: supply.gst ? 1 : 0,
       warehouse_id: warehouseId,
       ref_doc_id: refDocId,
       place_of_supply: supply.placeOfSupply,
@@ -175,9 +177,9 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       const customer = input.customerId ? requireCustomer(input.customerId) : null;
       const warehouseId = resolveWarehouse(input.warehouseId);
       const date = input.date || localDate();
-      const supply = { placeOfSupply: placeOfSupply(customer) };
+      const supply = { placeOfSupply: placeOfSupply(customer), gst: !!settings.get('gst_billing') };
       supply.interstate = isInterstate(supply.placeOfSupply);
-      const lines = buildLines(input.lines, pricingOptions(supply.interstate));
+      const lines = buildLines(input.lines, pricingOptions(supply.interstate, supply.gst));
       const totals = withRoundOff(totalsOf(lines));
       const payments = normalizePayments(input.payments);
       const paid = sum(payments.map((p) => p.amount));
@@ -217,6 +219,7 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       ).get(invoice.id, productId).n;
 
       const interstate = !!invoice.is_interstate;
+      const gst = !!invoice.gst_applied;
       const lines = inputs.map((input) => {
         const matching = originals.filter((l) => l.product_id === input.productId);
         ensure(matching.length, 'That product is not on this invoice');
@@ -231,7 +234,7 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
           discountPct: original.discount_pct,
           taxRate: original.tax_rate,
           unitCost: original.unit_cost,
-        }, pricingOptions(interstate));
+        }, pricingOptions(interstate, gst));
       });
 
       const day = date || localDate();
@@ -245,7 +248,7 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       const doc = saveDocument({
         type: 'return', status: 'posted', date: day, customer, warehouseId: invoice.warehouse_id,
         refDocId: invoice.id, lines, totals, payments: refund, note, by,
-        supply: { placeOfSupply: invoice.place_of_supply, interstate },
+        supply: { placeOfSupply: invoice.place_of_supply, interstate, gst },
       });
       for (const line of lines) {
         inventory.postMovement({
@@ -261,9 +264,9 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
   function createQuote(input = {}) {
     return tx(() => {
       const customer = input.customerId ? requireCustomer(input.customerId) : null;
-      const supply = { placeOfSupply: placeOfSupply(customer) };
+      const supply = { placeOfSupply: placeOfSupply(customer), gst: !!settings.get('gst_billing') };
       supply.interstate = isInterstate(supply.placeOfSupply);
-      const lines = buildLines(input.lines, pricingOptions(supply.interstate));
+      const lines = buildLines(input.lines, pricingOptions(supply.interstate, supply.gst));
       const doc = saveDocument({
         type: 'quote', status: 'open', date: input.date || localDate(), customer,
         warehouseId: resolveWarehouse(input.warehouseId), lines, totals: withRoundOff(totalsOf(lines)),
