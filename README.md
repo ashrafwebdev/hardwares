@@ -40,16 +40,21 @@ Roles: **cashiers** sell, take returns and manage customers. **Managers** also m
 - **GST returns figures** (Reports → GST returns): output GST on sales less credit notes, input tax credit on purchases from suppliers, the net payable (a negative figure carries forward), the HSN-wise summary by rate, and B2B invoices and credit notes.
 - **Input tax credit.** Purchases are recorded before GST. The GST on a purchase order is counted as input tax credit when the goods are received.
 
-**Shops not registered for GST: GST billing off**
+**Tax invoice or bill of supply, chosen for each bill**
 
-Turn off **Settings → Charge GST and issue tax invoices** if the shop is not registered for GST. Then:
+At the point of sale, pick **Bill type**: *Tax invoice (with GST)* or *Bill of supply (no GST)*. The same choice is available on quotes. The default for new bills comes from Settings.
 
-- Sales are plain bills of supply, headed "Bill of supply" (returns are "Refund note"). They have no GST, HSN, GSTIN or place-of-supply lines, and the total is the price.
-- Purchases record no input credit, so the cost you enter should be the full amount paid, GST included if the supplier charged it.
-- The GST returns tab is hidden. Plain bills still appear in every sales report.
-- Each document remembers whether GST applied when it was made. Switching the setting does not change earlier documents. A return on a tax invoice still reverses the GST, even after the switch is turned off.
+- **Bill of supply:** no GST, HSN, GSTIN or place-of-supply lines. The total is the price. Headed "Bill of supply". A return on it is a "Refund note".
+- **Tax invoice:** full GST as described above.
+- **Returns follow the original bill.** A credit note on a tax invoice reverses its GST, and a refund note on a bill of supply has no tax.
+- **GST return figures** include tax invoices only. Bills of supply still show in all sales reports.
 
-Turn the setting back on if the shop registers later.
+Settings:
+
+- **This shop is registered for GST.** Turn this off if the shop is not registered. Then only bills of supply can be issued, the GST returns tab is hidden, and purchases record no input credit.
+- **New bills start with GST ticked.** The default for the bill-type selector. Only available when the shop is registered.
+
+Each bill stores its own bill type, so changing the settings never changes earlier bills.
 
 **What to check with your CA before you file**
 
@@ -78,7 +83,7 @@ Turn the setting back on if the shop registers later.
 Requirements: Node.js 22.13 or newer.
 
 ```bash
-npm test                              # 59 tests
+npm test                              # 61 tests
 PORT=8080 node bin/erp-server.js      # hosted server at http://localhost:8080
 ```
 
@@ -183,5 +188,5 @@ npm test
 - `test/core.test.js`: sales, returns, credit limits, receipts, purchasing and average cost, quotes, transfers, low stock, profit and loss, aging, settings.
 - `test/sync.test.js`: two desktops and a hub exchange changes, conflicting edits resolve by last write, offline work is queued, and revoked devices are refused.
 - `test/server.test.js`: setup, login, roles, the sales API, error responses, static files, backups.
-- `test/gst_off.test.js`: plain bills with GST billing off, returns on earlier tax invoices, purchases, and GST report filtering.
+- `test/bill_type.test.js`: choosing tax invoice or bill of supply per bill, registration rules, returns and quotes keeping their bill type, purchases, and GST report filtering.
 - `test/india.test.js`: GSTIN and PAN checks, CGST/SGST versus IGST, GST-inclusive pricing, round-off, amounts in words, financial-year numbering, credit notes, input tax credit, and the GST return figures.

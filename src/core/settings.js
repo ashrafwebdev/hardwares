@@ -12,6 +12,7 @@ const DEFAULTS = {
   company_pan: '',
   currency: '₹',
   default_tax_rate: 0,
+  gst_registered: true,
   gst_billing: true,
   prices_include_gst: true,
   round_invoice_totals: true,
@@ -23,6 +24,7 @@ const bool = (v) => v === true || v === 'true' || v === 1 || v === '1';
 
 const CHECKS = {
   default_tax_rate: (v) => rate(v, 'Default GST rate'),
+  gst_registered: bool,
   gst_billing: bool,
   prices_include_gst: bool,
   round_invoice_totals: bool,

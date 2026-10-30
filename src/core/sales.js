@@ -107,6 +107,15 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       .filter((p) => p.amount > 0);
   }
 
+  // Each bill chooses tax invoice or bill of supply. The default comes from settings.
+  // A shop that is not registered for GST cannot issue tax invoices.
+  function gstFor(input) {
+    const registered = !!settings.get('gst_registered');
+    if (input.gst === undefined || input.gst === null) return registered && !!settings.get('gst_billing');
+    ensure(!input.gst || registered, 'This shop is not registered for GST, so only bills of supply can be issued');
+    return !!input.gst;
+  }
+
   function pricingOptions(interstate, gst = settings.get('gst_billing')) {
     return { inclusive: !!settings.get('prices_include_gst'), interstate, gst: !!gst };
   }
@@ -177,7 +186,7 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       const customer = input.customerId ? requireCustomer(input.customerId) : null;
       const warehouseId = resolveWarehouse(input.warehouseId);
       const date = input.date || localDate();
-      const supply = { placeOfSupply: placeOfSupply(customer), gst: !!settings.get('gst_billing') };
+      const supply = { placeOfSupply: placeOfSupply(customer), gst: gstFor(input) };
       supply.interstate = isInterstate(supply.placeOfSupply);
       const lines = buildLines(input.lines, pricingOptions(supply.interstate, supply.gst));
       const totals = withRoundOff(totalsOf(lines));
@@ -264,7 +273,7 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
   function createQuote(input = {}) {
     return tx(() => {
       const customer = input.customerId ? requireCustomer(input.customerId) : null;
-      const supply = { placeOfSupply: placeOfSupply(customer), gst: !!settings.get('gst_billing') };
+      const supply = { placeOfSupply: placeOfSupply(customer), gst: gstFor(input) };
       supply.interstate = isInterstate(supply.placeOfSupply);
       const lines = buildLines(input.lines, pricingOptions(supply.interstate, supply.gst));
       const doc = saveDocument({
@@ -283,6 +292,7 @@ function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
       const quoteLines = db.prepare('SELECT * FROM sales_lines WHERE doc_id = ? AND deleted = 0 ORDER BY rowid').all(quote.id);
       const sale = createSale({
         ...input,
+        gst: input.gst ?? !!quote.gst_applied,
         customerId: input.customerId ?? quote.customer_id,
         warehouseId: input.warehouseId ?? quote.warehouse_id,
         lines: input.lines || quoteLines.map((l) => ({

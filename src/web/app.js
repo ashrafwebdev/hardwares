@@ -273,13 +273,19 @@
   // ---- point of sale -------------------------------------------------------------------
 
   function newCart() {
-    return { customerId: '', lines: [], tender: '', method: 'cash', quoteId: null, note: '' };
+    // gst: null means 'use the default from settings'. true/false is the bill type chosen for this sale.
+    return { customerId: '', lines: [], tender: '', method: 'cash', quoteId: null, note: '', gst: null };
   }
 
   // Mirrors src/core/sales.js. The server recalculates everything when the sale is saved.
+  // Whether the bill now being made carries GST. A shop not registered for GST never does.
+  function cartGst() {
+    return !!state.settings.gst_registered && (state.pos.gst ?? !!state.settings.gst_billing);
+  }
+
   function lineTotals(line) {
     const amount = Math.round(line.qty * line.unitPrice * (1 - line.discountPct / 100));
-    if (!state.settings.gst_billing) return { net: amount, tax: 0, total: amount };
+    if (!cartGst()) return { net: amount, tax: 0, total: amount };
     if (state.settings.prices_include_gst) {
       const net = Math.round((amount * 100) / (100 + line.taxRate));
       return { net, tax: amount - net, total: amount };
@@ -342,6 +348,12 @@
         <label style="flex:1">Customer
           <select data-on="pos-customer">${options(state.customers, cart.customerId, (c) => `${c.name}${c.balance > 0 ? ` (owes ${money(c.balance)})` : ''}`, 'Walk-in customer')}</select>
         </label>
+        ${state.settings.gst_registered ? `<label>Bill type
+          <select data-on="pos-bill">
+            <option value="gst" ${cartGst() ? 'selected' : ''}>Tax invoice (with GST)</option>
+            <option value="plain" ${cartGst() ? '' : 'selected'}>Bill of supply (no GST)</option>
+          </select>
+        </label>` : ''}
         <label>Warehouse
           <select data-on="pos-warehouse">${options(state.warehouses, state.pos.warehouseId || state.warehouses[0]?.id, (w) => w.name, null)}</select>
         </label>
@@ -376,7 +388,7 @@
     const due = Math.max(t.total - received, 0);
     el.innerHTML = `<div class="totals">
       <span>Subtotal</span><span class="num">${money(t.subtotal)}</span>
-      ${state.settings.gst_billing ? `<span>GST</span><span class="num">${money(t.tax)}</span>` : ''}
+      ${cartGst() ? `<span>GST</span><span class="num">${money(t.tax)}</span>` : ''}
       ${t.roundOff ? `<span>Round off</span><span class="num">${money(t.roundOff)}</span>` : ''}
       <span class="grand">Total</span><span class="num grand">${money(t.total)}</span>
       ${received > 0 ? `<span>Received</span><span class="num">${money(received)}</span>` : ''}
@@ -392,6 +404,7 @@
     const paid = Math.min(toCents(cart.tender), t.total);
     return {
       customerId: cart.customerId || null,
+      gst: cartGst(),
       warehouseId: cart.warehouseId || state.warehouses[0]?.id,
       lines: cart.lines.map((l) => ({
         productId: l.productId, qty: l.qty, unitPrice: l.unitPrice, discountPct: l.discountPct, taxRate: l.taxRate,
@@ -407,6 +420,7 @@
       ...newCart(),
       customerId: quote.customer_id || '',
       quoteId: quote.id,
+      gst: !!quote.gst_applied,
       warehouseId: quote.warehouse_id,
       lines: quote.lines.map((l) => ({
         productId: l.product_id, name: l.description, sku: '', unit: '', qty: l.qty,
@@ -682,7 +696,7 @@
             <label>Unit <input name="unit" value="${esc(product.unit || 'pcs')}" ${dis}></label>
             <label>Cost <input class="money" name="cost" data-kind="money" type="number" step="0.01" min="0" value="${amount(product.cost)}" ${dis}></label>
             <label>Selling price <input class="money" name="price" data-kind="money" type="number" step="0.01" min="0" value="${amount(product.price)}" ${dis}></label>
-            ${state.settings.gst_billing
+            ${state.settings.gst_registered
               ? `<label>GST rate <select name="tax_rate" data-kind="num" ${dis}>${gstOptions(product.tax_rate ?? state.settings.default_tax_rate)}</select></label>`
               : `<input type="hidden" name="tax_rate" data-kind="num" value="${product.tax_rate ?? 0}"><p class="muted">GST is off. Prices are final.</p>`}
             <label>Reorder level <input name="reorder_level" data-kind="num" type="number" step="0.001" min="0" value="${product.reorder_level ?? 0}" ${dis}></label>
@@ -1041,7 +1055,7 @@
     const type = query.get('type') || 'profit';
     const filters = { from: query.get('from') || monthStart(), to: query.get('to') || today(), type };
     const range = new URLSearchParams({ from: filters.from, to: filters.to });
-    const tabs = [['profit', 'Profit & loss'], ['sales', 'Sales by day'], ...(state.settings.gst_billing ? [['gst', 'GST returns']] : []), ['top', 'Top products'], ['valuation', 'Stock valuation'], ['receivables', 'Receivables'], ['payables', 'Payables']];
+    const tabs = [['profit', 'Profit & loss'], ['sales', 'Sales by day'], ...(state.settings.gst_registered ? [['gst', 'GST returns']] : []), ['top', 'Top products'], ['valuation', 'Stock valuation'], ['receivables', 'Receivables'], ['payables', 'Payables']];
     let body = '';
     let csv = null;
 
@@ -1076,8 +1090,8 @@
         { label: 'Gross profit', num: true, render: (r) => money(r.gross_profit) },
       ], rows, { empty: 'No sales in this period.' });
       csv = { headers: ['Product', 'SKU', 'Qty', 'Revenue', 'Cost', 'Gross profit'], rows: rows.map((r) => [r.name, r.sku, r.qty, amount(r.revenue), amount(r.cost), amount(r.gross_profit)]) };
-    } else if (type === 'gst' && !state.settings.gst_billing) {
-      body = '<p class="muted">GST billing is off, so there are no GST returns. Turn it on in Settings.</p>';
+    } else if (type === 'gst' && !state.settings.gst_registered) {
+      body = '<p class="muted">This shop is not registered for GST, so there are no GST returns. Turn registration on in Settings.</p>';
     } else if (type === 'gst') {
       const g = await api('GET', `/reports/gst?${range}`);
       const gstRow = (label, o) => `<tr><td>${label}</td><td class="num">${money(o.taxable)}</td>
@@ -1195,8 +1209,8 @@
             <label>Default GST rate for new products <select name="default_tax_rate" data-kind="num">${gstOptions(s.default_tax_rate)}</select></label>
           </div>
           <label style="margin-top:12px">Receipt footer <input name="receipt_footer" value="${esc(s.receipt_footer)}"></label>
-          <label class="inline" style="margin-top:12px"><input type="checkbox" name="gst_billing" ${s.gst_billing ? 'checked' : ''}> Charge GST and issue tax invoices (turn off if the shop is not registered for GST)</label>
-          ${s.gst_billing ? '' : '<p class="muted">Sales are billed as a bill of supply with no tax. GSTIN, GST rates and the GST return are hidden until GST billing is turned on again. Earlier tax invoices keep their tax.</p>'}
+          <label class="inline" style="margin-top:12px"><input type="checkbox" name="gst_registered" ${s.gst_registered ? 'checked' : ''}> This shop is registered for GST (can issue tax invoices and claim input credit)</label>
+          <label class="inline" style="margin-top:12px"><input type="checkbox" name="gst_billing" ${s.gst_billing ? 'checked' : ''} ${s.gst_registered ? '' : 'disabled'}> New bills start with GST ticked (you can still choose per bill)</label>
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="prices_include_gst" ${s.prices_include_gst ? 'checked' : ''}> Selling prices include GST (MRP style)</label>
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="round_invoice_totals" ${s.round_invoice_totals ? 'checked' : ''}> Round invoice totals to the rupee</label>
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="allow_negative_stock" ${s.allow_negative_stock ? 'checked' : ''}> Allow selling items that are out of stock</label>
@@ -1664,6 +1678,9 @@
       renderPosCart();
     } else if (on === 'pos-customer') {
       state.pos.customerId = el.value;
+      renderPosCart();
+    } else if (on === 'pos-bill') {
+      state.pos.gst = el.value === 'gst';
       renderPosCart();
     } else if (on === 'pos-warehouse') {
       state.pos.warehouseId = el.value;
