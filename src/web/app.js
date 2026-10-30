@@ -12,7 +12,7 @@
   const NAV = [
     { id: 'dashboard', label: 'Dashboard', roles: ALL },
     { id: 'sell', label: 'Point of sale', roles: ALL },
-    { id: 'sales', label: 'Sales & returns', roles: ALL },
+    { id: 'sales', label: 'Sales & credit notes', roles: ALL },
     { id: 'quotes', label: 'Quotes', roles: ALL },
     { id: 'customers', label: 'Customers', roles: ALL },
     { id: 'products', label: 'Products', roles: ALL },
@@ -37,6 +37,7 @@
     po: { lines: [] },
     sale: null,
     report: null,
+    meta: { states: [], gstRates: [] },
   };
 
   const app = document.getElementById('app');
@@ -62,15 +63,29 @@
     }[c]));
   }
 
-  const money = (cents) => `${state.settings.currency ?? ''}${(Number(cents || 0) / 100).toLocaleString(undefined, {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+  // Indian grouping, for example 1,23,45,678.00
+  const inr = (cents) => (Number(cents || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = (cents) => `${state.settings.currency || '₹'}${inr(cents)}`;
   const amount = (cents) => (Number(cents || 0) / 100).toFixed(2);
   const num = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
   const toCents = (value) => Math.round(parseFloat(value || 0) * 100) || 0;
   const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const monthStart = () => `${today().slice(0, 8)}01`;
-  const dateOnly = (value) => String(value || '').slice(0, 10);
+  const isoDate = (value) => String(value || '').slice(0, 10);
+  // Display as dd-mm-yyyy, the usual Indian format.
+  const dateOnly = (value) => {
+    const [y, m, d] = isoDate(value).split('-');
+    return d ? `${d}-${m}-${y}` : '';
+  };
+  const stateName = (code) => state.meta.states.find((x) => x.code === code)?.name || '—';
+  const stateOptions = (selected) => options(
+    state.meta.states.map((x) => ({ id: x.code, name: `${x.code} · ${x.name}` })), selected, (x) => x.name, 'Select state',
+  );
+  const gstOptions = (selected) => {
+    const current = Number(selected ?? 0);
+    const rates = [...new Set([...state.meta.gstRates, current])].sort((a, b) => a - b);
+    return rates.map((r) => `<option value="${r}" ${r === current ? 'selected' : ''}>${r}%</option>`).join('');
+  };
   const options = (items, selected, label = (i) => i.name, blank = '') => [
     blank !== null ? `<option value="">${esc(blank)}</option>` : '',
     ...items.map((i) => `<option value="${esc(i.id)}" ${i.id === selected ? 'selected' : ''}>${esc(label(i))}</option>`),
@@ -163,10 +178,11 @@
   }
 
   async function loadShared() {
-    const [settings, warehouses, categories] = await Promise.all([
-      api('GET', '/settings'), api('GET', '/warehouses'), api('GET', '/categories'),
+    const [settings, warehouses, categories, meta] = await Promise.all([
+      api('GET', '/settings'), api('GET', '/warehouses'), api('GET', '/categories'), api('GET', '/meta'),
     ]);
     state.settings = settings;
+    state.meta = meta;
     state.warehouses = warehouses;
     state.categories = categories;
   }
@@ -260,17 +276,25 @@
     return { customerId: '', lines: [], tender: '', method: 'cash', quoteId: null, note: '' };
   }
 
+  // Mirrors src/core/sales.js. The server recalculates everything when the sale is saved.
   function lineTotals(line) {
-    const net = Math.round(line.qty * line.unitPrice * (1 - line.discountPct / 100));
-    const tax = Math.round((net * line.taxRate) / 100);
-    return { net, tax, total: net + tax };
+    const amount = Math.round(line.qty * line.unitPrice * (1 - line.discountPct / 100));
+    if (state.settings.prices_include_gst) {
+      const net = Math.round((amount * 100) / (100 + line.taxRate));
+      return { net, tax: amount - net, total: amount };
+    }
+    const tax = Math.round((amount * line.taxRate) / 100);
+    return { net: amount, tax, total: amount + tax };
   }
 
   function cartTotals(cart) {
-    return cart.lines.reduce((t, line) => {
+    const raw = cart.lines.reduce((t, line) => {
       const l = lineTotals(line);
       return { subtotal: t.subtotal + l.net, tax: t.tax + l.tax, total: t.total + l.total };
     }, { subtotal: 0, tax: 0, total: 0 });
+    if (!state.settings.round_invoice_totals) return { ...raw, roundOff: 0 };
+    const total = Math.round(raw.total / 100) * 100;
+    return { ...raw, total, roundOff: total - raw.total };
   }
 
   function addToCart(product) {
@@ -351,7 +375,8 @@
     const due = Math.max(t.total - received, 0);
     el.innerHTML = `<div class="totals">
       <span>Subtotal</span><span class="num">${money(t.subtotal)}</span>
-      <span>Tax</span><span class="num">${money(t.tax)}</span>
+      <span>GST</span><span class="num">${money(t.tax)}</span>
+      ${t.roundOff ? `<span>Round off</span><span class="num">${money(t.roundOff)}</span>` : ''}
       <span class="grand">Total</span><span class="num grand">${money(t.total)}</span>
       ${received > 0 ? `<span>Received</span><span class="num">${money(received)}</span>` : ''}
       ${change > 0 ? `<span><strong>Change due</strong></span><span class="num"><strong>${money(change)}</strong></span>` : ''}
@@ -448,7 +473,7 @@
       api('GET', `/returns?${new URLSearchParams(filters)}`),
     ]);
     return {
-      html: `<div class="toolbar"><h1>Sales & returns</h1><a class="btn primary" href="#/sell">New sale</a></div>
+      html: `<div class="toolbar"><h1>Sales & credit notes</h1><a class="btn primary" href="#/sell">New sale</a></div>
         ${filterForm('sales', filters, [['q', 'Search number or customer'], ['from', 'From', 'date'], ['to', 'To', 'date']])}
         <h2>Invoices</h2>
         ${table([
@@ -459,7 +484,7 @@
           { label: 'Paid', num: true, render: (r) => money(r.settled) },
           { label: 'Status', render: (r) => statusBadge(r.status) },
         ], invoices, { rowLink: (r) => `#/sale/${r.id}`, empty: 'No invoices match.' })}
-        <h2 style="margin-top:24px">Returns</h2>
+        <h2 style="margin-top:24px">Credit notes</h2>
         ${table([
           { label: 'Number', render: (r) => esc(r.number) },
           { label: 'Date', render: (r) => esc(dateOnly(r.date)) },
@@ -489,8 +514,11 @@
     state.sale = s;
     const isInvoice = s.type === 'invoice';
     const isOpenQuote = s.type === 'quote' && s.status === 'open';
-    const typeLabel = { invoice: 'Invoice', return: 'Return', quote: 'Quote' }[s.type];
+    const heading = { invoice: 'Tax invoice', return: 'Credit note', quote: 'Quotation' }[s.type];
     const showReturnForm = isInvoice && s.status === 'posted' && s.lines.length > 0;
+    const gstRows = s.is_interstate
+      ? [['IGST', s.igst_total]]
+      : [['CGST', s.cgst_total], ['SGST', s.sgst_total]];
     return {
       html: `<div class="toolbar no-print">
           <a href="#/${s.type === 'quote' ? 'quotes' : 'sales'}">← Back</a>
@@ -502,39 +530,45 @@
         </div>
         <article class="panel receipt">
           <div class="head">
-            <h1>${esc(state.settings.company_name)}</h1>
+            <h1>${esc(s.seller?.name || state.settings.company_name)}</h1>
             <div class="muted">${esc(state.settings.company_address || '')}${state.settings.company_phone ? ` · ${esc(state.settings.company_phone)}` : ''}</div>
-            ${state.settings.company_tax_no ? `<div class="muted">Tax no. ${esc(state.settings.company_tax_no)}</div>` : ''}
-            <h2 style="margin-top:12px">${esc(typeLabel)} ${esc(s.number)} ${statusBadge(s.status)}</h2>
+            ${s.seller?.gstin ? `<div class="muted">GSTIN ${esc(s.seller.gstin)} · ${esc(stateName(s.seller.state_code))}</div>` : ''}
+            <h2 style="margin-top:12px">${esc(heading)} ${esc(s.number)} ${statusBadge(s.status)}</h2>
           </div>
           <div class="meta">
-            <div><strong>Customer:</strong> ${esc(s.customer_name || 'Walk-in')}</div>
-            <div><strong>Date:</strong> ${esc(dateOnly(s.date))}</div>
-            <div><strong>Warehouse:</strong> ${esc(s.warehouse?.name || '')}</div>
-            <div><strong>Served by:</strong> ${esc(s.created_by)}</div>
+            <div><strong>Bill to:</strong> ${esc(s.customer_name || 'Walk-in customer')}
+              ${s.customer?.address ? `<br>${esc(s.customer.address)}` : ''}
+              ${s.customer_gstin ? `<br>GSTIN ${esc(s.customer_gstin)}` : ''}</div>
+            <div><strong>Date:</strong> ${esc(dateOnly(s.date))}<br>
+              <strong>Place of supply:</strong> ${esc(stateName(s.place_of_supply || s.seller?.state_code))}</div>
           </div>
           ${table([
             { label: 'Item', render: (r) => esc(r.description) },
+            { label: 'HSN', render: (r) => esc(r.hsn_code || '—') },
             { label: 'Qty', num: true, render: (r) => num(r.qty) },
-            { label: 'Price', num: true, render: (r) => money(r.unit_price) },
+            { label: 'Rate', num: true, render: (r) => money(r.unit_price) },
             { label: 'Disc %', num: true, render: (r) => num(r.discount_pct) },
-            { label: 'Tax', num: true, render: (r) => money(r.tax_amount) },
-            { label: 'Total', num: true, render: (r) => money(r.total) },
+            { label: 'Taxable', num: true, render: (r) => money(r.net) },
+            { label: 'GST %', num: true, render: (r) => num(r.tax_rate) },
+            { label: 'GST', num: true, render: (r) => money(r.tax_amount) },
+            { label: 'Amount', num: true, render: (r) => money(r.total) },
           ], s.lines, { empty: 'No lines' })}
-          <div class="totals" style="margin:16px 0 0 auto;max-width:320px">
-            <span>Subtotal</span><span class="num">${money(s.subtotal)}</span>
-            <span>Tax</span><span class="num">${money(s.tax_total)}</span>
-            <span class="grand">Total</span><span class="num grand">${money(s.total)}</span>
-            ${s.type !== 'quote' ? `<span>${s.type === 'return' ? 'Refunded' : 'Paid'}</span><span class="num">${money(s.type === 'return' ? -s.settled : s.settled)}</span>` : ''}
+          <div class="totals" style="margin:16px 0 0 auto;max-width:380px">
+            <span>Taxable value</span><span class="num">${money(s.subtotal)}</span>
+            ${gstRows.filter(([, v]) => v).map(([name, v]) => `<span>${name}</span><span class="num">${money(v)}</span>`).join('')}
+            ${s.round_off ? `<span>Round off</span><span class="num">${money(s.round_off)}</span>` : ''}
+            <span class="grand">${s.type === 'return' ? 'Credit amount' : 'Total'}</span><span class="num grand">${money(s.total)}</span>
+            ${s.type !== 'quote' ? `<span>${s.type === 'return' ? 'Refunded' : 'Received'}</span><span class="num">${money(s.type === 'return' ? -s.settled : s.settled)}</span>` : ''}
             ${isInvoice && s.due > 0 ? `<span><strong>Balance due</strong></span><span class="num"><strong>${money(s.due)}</strong></span>` : ''}
           </div>
+          <p style="margin-top:12px"><strong>Amount in words:</strong> ${esc(s.amount_in_words)}</p>
           ${s.payments.length ? `<h2 style="margin-top:16px">Payments</h2>${table([
             { label: 'Number', render: (r) => esc(r.number) },
             { label: 'Method', render: (r) => esc(r.method) },
             { label: 'Kind', render: (r) => esc(r.kind) },
             { label: 'Amount', num: true, render: (r) => money(r.amount) },
           ], s.payments)}` : ''}
-          ${s.returns.length ? `<h2 style="margin-top:16px">Returns</h2>${table([
+          ${s.returns.length ? `<h2 style="margin-top:16px">Credit notes</h2>${table([
             { label: 'Number', render: (r) => esc(r.number) },
             { label: 'Date', render: (r) => esc(dateOnly(r.date)) },
             { label: 'Total', num: true, render: (r) => money(r.total) },
@@ -586,7 +620,7 @@
           { label: 'Category', render: (r) => esc(r.category_name || '') },
           { label: 'Cost', num: true, render: (r) => money(r.cost) },
           { label: 'Price', num: true, render: (r) => money(r.price) },
-          { label: 'Tax %', num: true, render: (r) => num(r.tax_rate) },
+          { label: 'GST %', num: true, render: (r) => num(r.tax_rate) },
           { label: 'Stock', num: true, render: (r) => `${num(r.stock)} ${esc(r.unit)}${r.reorder_level > 0 && r.stock <= r.reorder_level ? ' <span class="badge warn">low</span>' : ''}` },
         ], products, { rowLink: (r) => `#/product/${r.id}`, empty: 'No products match.' })}
         ${isManager() ? categoriesPanel() : ''}`,
@@ -634,13 +668,14 @@
           <div class="grid">
             <label>SKU <input name="sku" required value="${esc(product.sku || '')}" ${dis}></label>
             <label>Barcode <input name="barcode" value="${esc(product.barcode || '')}" ${dis}></label>
+            <label>HSN code <input name="hsn_code" inputmode="numeric" value="${esc(product.hsn_code || '')}" placeholder="4, 6 or 8 digits" ${dis}></label>
             <label>Name <input name="name" required value="${esc(product.name || '')}" ${dis}></label>
             <label>Category <select name="category_id" ${dis}>${options(state.categories, product.category_id, (c) => c.name)}</select></label>
             <label>Supplier <select name="supplier_id" ${dis}>${options(suppliers, product.supplier_id, (s) => s.name)}</select></label>
             <label>Unit <input name="unit" value="${esc(product.unit || 'pcs')}" ${dis}></label>
             <label>Cost <input class="money" name="cost" data-kind="money" type="number" step="0.01" min="0" value="${amount(product.cost)}" ${dis}></label>
             <label>Selling price <input class="money" name="price" data-kind="money" type="number" step="0.01" min="0" value="${amount(product.price)}" ${dis}></label>
-            <label>Tax % <input name="tax_rate" data-kind="num" type="number" step="0.01" min="0" max="100" value="${product.tax_rate ?? 0}" ${dis}></label>
+            <label>GST rate <select name="tax_rate" data-kind="num" ${dis}>${gstOptions(product.tax_rate ?? state.settings.default_tax_rate)}</select></label>
             <label>Reorder level <input name="reorder_level" data-kind="num" type="number" step="0.001" min="0" value="${product.reorder_level ?? 0}" ${dis}></label>
             <label>Shelf location <input name="location" value="${esc(product.location || '')}" ${dis}></label>
           </div>
@@ -735,7 +770,9 @@
         <label>Phone <input name="phone" value="${esc(record.phone || '')}"></label>
         <label>Email <input name="email" type="email" value="${esc(record.email || '')}"></label>
         <label>Address <input name="address" value="${esc(record.address || '')}"></label>
-        <label>Tax no. <input name="tax_no" value="${esc(record.tax_no || '')}"></label>
+        <label>GSTIN <input name="gstin" maxlength="15" value="${esc(record.gstin || '')}" placeholder="15 characters, optional"></label>
+        <label>State <select name="state_code">${stateOptions(record.state_code)}</select></label>
+        <label>PAN <input name="pan" maxlength="10" value="${esc(record.pan || '')}"></label>
         <label>Opening balance <input class="money" name="opening_balance" data-kind="money" type="number" step="0.01" value="${amount(record.opening_balance)}"></label>
         ${creditField ? `<label>Credit limit (0 = no credit) <input class="money" name="credit_limit" data-kind="money" type="number" step="0.01" min="0" value="${amount(record.credit_limit)}"></label>` : ''}
       </div>
@@ -897,12 +934,12 @@
             { label: 'Item', render: (r) => esc(r.description) },
             { label: 'Qty', num: true, render: (r) => num(r.qty) },
             { label: 'Unit cost', num: true, render: (r) => money(r.unit_cost) },
-            { label: 'Tax %', num: true, render: (r) => num(r.tax_rate) },
+            { label: 'GST %', num: true, render: (r) => num(r.tax_rate) },
             { label: 'Total', num: true, render: (r) => money(r.total) },
           ], order.lines)}
           <div class="totals" style="margin:16px 0 0 auto;max-width:320px">
             <span>Subtotal</span><span class="num">${money(order.subtotal)}</span>
-            <span>Tax</span><span class="num">${money(order.tax_total)}</span>
+            <span>GST</span><span class="num">${money(order.tax_total)}</span>
             <span class="grand">Total</span><span class="num grand">${money(order.total)}</span>
           </div>
         </section>`,
@@ -920,7 +957,7 @@
             suppliers, order?.supplier_id || '', (s) => s.name, 'Choose supplier',
           )}</select></label>
           <label>Warehouse <select name="warehouseId">${options(state.warehouses, order?.warehouse_id || state.warehouses[0]?.id, (w) => w.name, null)}</select></label>
-          <label>Date <input type="date" name="date" value="${esc(order ? dateOnly(order.date) : today())}"></label>
+          <label>Date <input type="date" name="date" value="${esc(order ? isoDate(order.date) : today())}"></label>
           <label>Note <input name="note" value="${esc(order?.note || '')}"></label>
         </div>
         <div class="row">
@@ -995,7 +1032,7 @@
     const type = query.get('type') || 'profit';
     const filters = { from: query.get('from') || monthStart(), to: query.get('to') || today(), type };
     const range = new URLSearchParams({ from: filters.from, to: filters.to });
-    const tabs = [['profit', 'Profit & loss'], ['sales', 'Sales by day'], ['top', 'Top products'], ['valuation', 'Stock valuation'], ['receivables', 'Receivables'], ['payables', 'Payables']];
+    const tabs = [['profit', 'Profit & loss'], ['sales', 'Sales by day'], ['gst', 'GST returns'], ['top', 'Top products'], ['valuation', 'Stock valuation'], ['receivables', 'Receivables'], ['payables', 'Payables']];
     let body = '';
     let csv = null;
 
@@ -1030,6 +1067,55 @@
         { label: 'Gross profit', num: true, render: (r) => money(r.gross_profit) },
       ], rows, { empty: 'No sales in this period.' });
       csv = { headers: ['Product', 'SKU', 'Qty', 'Revenue', 'Cost', 'Gross profit'], rows: rows.map((r) => [r.name, r.sku, r.qty, amount(r.revenue), amount(r.cost), amount(r.gross_profit)]) };
+    } else if (type === 'gst') {
+      const g = await api('GET', `/reports/gst?${range}`);
+      const gstRow = (label, o) => `<tr><td>${label}</td><td class="num">${money(o.taxable)}</td>
+        <td class="num">${money(o.cgst)}</td><td class="num">${money(o.sgst)}</td><td class="num">${money(o.igst)}</td>
+        <td class="num">${money(o.tax)}</td></tr>`;
+      body = `<div class="grid">
+          ${kpi('Output GST on sales', money(g.outward.tax))}
+          ${kpi('Input tax credit on purchases', money(g.input_tax_credit.tax))}
+          ${kpi('Net GST payable', money(g.net_payable), g.net_payable > 0)}
+        </div>
+        <h2 style="margin-top:16px">Summary (GSTR-3B style)</h2>
+        <div class="table-wrap"><table><thead><tr><th>Supplies</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total GST</th></tr></thead>
+          <tbody>${gstRow('Outward supplies (sales less credit notes)', g.outward)}${gstRow('Inward supplies (purchases)', g.input_tax_credit)}</tbody></table></div>
+        <p class="muted">Net payable is output GST less input tax credit. A negative figure carries forward to the next month.</p>
+        <h2 style="margin-top:20px">HSN-wise summary</h2>
+        ${table([
+          { label: 'HSN', render: (r) => esc(r.hsn_code) },
+          { label: 'Unit', render: (r) => esc(r.unit || '') },
+          { label: 'Qty', num: true, render: (r) => num(r.qty) },
+          { label: 'GST %', num: true, render: (r) => num(r.tax_rate) },
+          { label: 'Taxable', num: true, render: (r) => money(r.taxable) },
+          { label: 'CGST', num: true, render: (r) => money(r.cgst) },
+          { label: 'SGST', num: true, render: (r) => money(r.sgst) },
+          { label: 'IGST', num: true, render: (r) => money(r.igst) },
+        ], g.hsn, { empty: 'No sales in this period.' })}
+        <h2 style="margin-top:20px">B2B invoices (customers with GSTIN)</h2>
+        ${table([
+          { label: 'Invoice', render: (r) => esc(r.number) },
+          { label: 'Date', render: (r) => esc(dateOnly(r.date)) },
+          { label: 'Customer', render: (r) => esc(r.customer_name || '') },
+          { label: 'GSTIN', render: (r) => esc(r.customer_gstin) },
+          { label: 'Taxable', num: true, render: (r) => money(r.taxable) },
+          { label: 'GST', num: true, render: (r) => money(r.tax) },
+          { label: 'Total', num: true, render: (r) => money(r.total) },
+        ], g.b2b_invoices, { empty: 'No B2B invoices in this period.' })}
+        ${g.b2b_credit_notes.length ? `<h2 style="margin-top:20px">B2B credit notes</h2>${table([
+          { label: 'Credit note', render: (r) => esc(r.number) },
+          { label: 'Date', render: (r) => esc(dateOnly(r.date)) },
+          { label: 'Customer', render: (r) => esc(r.customer_name || '') },
+          { label: 'GSTIN', render: (r) => esc(r.customer_gstin) },
+          { label: 'Taxable', num: true, render: (r) => money(r.taxable) },
+          { label: 'GST', num: true, render: (r) => money(r.tax) },
+          { label: 'Total', num: true, render: (r) => money(r.total) },
+        ], g.b2b_credit_notes)}` : ''}
+        <p class="muted" style="margin-top:12px">Other (walk-in) sales: ${g.b2c.invoices} invoices, taxable ${money(g.b2c.taxable)}, GST ${money(g.b2c.tax)}.</p>`;
+      csv = {
+        headers: ['HSN', 'Unit', 'Qty', 'GST %', 'Taxable', 'CGST', 'SGST', 'IGST'],
+        rows: g.hsn.map((r) => [r.hsn_code, r.unit || '', r.qty, r.tax_rate, amount(r.taxable), amount(r.cgst), amount(r.sgst), amount(r.igst)]),
+      };
     } else if (type === 'valuation') {
       const v = await api('GET', '/reports/valuation');
       body = `<div class="grid">${kpi('Stock value at cost', money(v.total))}</div>
@@ -1091,11 +1177,15 @@
             <label>Shop name <input name="company_name" value="${esc(s.company_name)}" required></label>
             <label>Phone <input name="company_phone" value="${esc(s.company_phone)}"></label>
             <label>Address <input name="company_address" value="${esc(s.company_address)}"></label>
-            <label>Tax registration no. <input name="company_tax_no" value="${esc(s.company_tax_no)}"></label>
+            <label>GSTIN <input name="company_gstin" maxlength="15" value="${esc(s.company_gstin)}"></label>
+            <label>Shop state <select name="company_state_code">${stateOptions(s.company_state_code)}</select></label>
+            <label>PAN <input name="company_pan" maxlength="10" value="${esc(s.company_pan)}"></label>
             <label>Currency symbol <input name="currency" value="${esc(s.currency)}" maxlength="6"></label>
-            <label>Default tax % for new products <input name="default_tax_rate" data-kind="num" type="number" step="0.01" min="0" max="100" value="${s.default_tax_rate}"></label>
+            <label>Default GST rate for new products <select name="default_tax_rate" data-kind="num">${gstOptions(s.default_tax_rate)}</select></label>
           </div>
           <label style="margin-top:12px">Receipt footer <input name="receipt_footer" value="${esc(s.receipt_footer)}"></label>
+          <label class="inline" style="margin-top:12px"><input type="checkbox" name="prices_include_gst" ${s.prices_include_gst ? 'checked' : ''}> Selling prices include GST (MRP style)</label>
+          <label class="inline" style="margin-top:12px"><input type="checkbox" name="round_invoice_totals" ${s.round_invoice_totals ? 'checked' : ''}> Round invoice totals to the rupee</label>
           <label class="inline" style="margin-top:12px"><input type="checkbox" name="allow_negative_stock" ${s.allow_negative_stock ? 'checked' : ''}> Allow selling items that are out of stock</label>
           <div style="margin-top:12px"><button class="primary" type="submit">Save settings</button></div>
         </form>
@@ -1457,9 +1547,12 @@
         refund = sale.lines.reduce((sum, l) => {
           const picked = lines.find((x) => x.productId === l.product_id);
           if (!picked) return sum;
-          const net = Math.round(picked.qty * l.unit_price * (1 - l.discount_pct / 100));
-          return sum + net + Math.round((net * l.tax_rate) / 100);
+          const amount = Math.round(picked.qty * l.unit_price * (1 - l.discount_pct / 100));
+          if (state.settings.prices_include_gst) return sum + amount;
+          return sum + amount + Math.round((amount * l.tax_rate) / 100);
         }, 0);
+        // Credit notes are rounded the same way as invoices, so a walk-in refund matches exactly.
+        if (state.settings.round_invoice_totals) refund = Math.round(refund / 100) * 100;
       }
       const result = await api('POST', `/sales/${sale.id}/return`, {
         lines,

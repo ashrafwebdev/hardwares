@@ -24,7 +24,7 @@ function createFinance({ db, repo, tx, nextNumber }) {
         ensure(doc && doc.customer_id === customer.id, 'Invoice does not belong to this customer', 400);
       }
       return repo.save('payments', {
-        number: nextNumber('RCT'), kind: 'receipt', party_type: 'customer', party_id: customer.id,
+        number: nextNumber('RC-', date, 4), kind: 'receipt', party_type: 'customer', party_id: customer.id,
         doc_id: docId || null, amount: value, method: text(method) || 'cash',
         date: date || localDate(), note: text(note), created_by: by || 'system', created_at: nowIso(),
       });
@@ -40,7 +40,7 @@ function createFinance({ db, repo, tx, nextNumber }) {
       const credit = -customerBalance(db, customer.id);
       ensure(value <= credit, `Refund is more than the customer's credit (${(Math.max(credit, 0) / 100).toFixed(2)})`);
       return repo.save('payments', {
-        number: nextNumber('RFD'), kind: 'refund', party_type: 'customer', party_id: customer.id,
+        number: nextNumber('RF-', date, 4), kind: 'refund', party_type: 'customer', party_id: customer.id,
         doc_id: null, amount: value, method: text(method) || 'cash',
         date: date || localDate(), note: text(note), created_by: by || 'system', created_at: nowIso(),
       });
@@ -55,7 +55,7 @@ function createFinance({ db, repo, tx, nextNumber }) {
       const balance = supplierBalance(db, supplier.id);
       ensure(value <= balance, `Payment is more than the amount owed (${(balance / 100).toFixed(2)})`);
       return repo.save('payments', {
-        number: nextNumber('PMT'), kind: 'payment', party_type: 'supplier', party_id: supplier.id,
+        number: nextNumber('PM-', date, 4), kind: 'payment', party_type: 'supplier', party_id: supplier.id,
         doc_id: null, amount: value, method: text(method) || 'cash',
         date: date || localDate(), note: text(note), created_by: by || 'system', created_at: nowIso(),
       });

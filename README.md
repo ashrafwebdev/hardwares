@@ -10,6 +10,8 @@ An ERP for a hardware shop. One codebase runs in three ways:
 
 The core has no runtime dependencies. It uses Node.js 22.13+ and its built-in `node:sqlite`, so there is nothing native to compile, including for Electron.
 
+This version is set up for **India**: rupees with Indian digit grouping, GST on every sale and purchase, tax invoices and credit notes, and an April-to-March financial year. See [India: GST and rupees](#india-gst-and-rupees).
+
 ## Features
 
 - **Point of sale**: barcode/SKU scanning, carts with per-line price and discount, tax, cash/card/other tender with change, credit sales on account, save as quote.
@@ -19,17 +21,53 @@ The core has no runtime dependencies. It uses Node.js 22.13+ and its built-in `n
 - **Purchasing**: purchase orders (draft, ordered, received, cancelled). Receiving posts stock in and updates the product's weighted-average cost.
 - **Customers and suppliers**: credit limits, opening balances, balances, FIFO receivables aging, statements, receipts, refunds of credit, supplier payments.
 - **Expenses** by category.
-- **Reports**: dashboard, profit and loss, sales by day, top products, stock valuation, receivables aging, payables. CSV export for each report.
+- **Reports**: dashboard, profit and loss, sales by day, GST returns (GSTR-1 and GSTR-3B style figures, HSN summary, B2B invoices), top products, stock valuation, receivables aging, payables. CSV export for each report.
 - **Administration**: first-run setup, users with roles (admin, manager, cashier), settings, warehouses, device tokens for sync, database backup download.
 
 Roles: **cashiers** sell, take returns and manage customers. **Managers** also manage products, stock, purchasing, expenses and reports. **Admins** also manage users, settings and sync.
+
+## India: GST and rupees
+
+**What the app does for GST**
+
+- **GST on every line.** Each product has an HSN code (4, 6 or 8 digits) and a GST rate. Sales show taxable value, GST and amount per line.
+- **CGST + SGST or IGST, chosen automatically.** A sale to a customer in the shop's own state carries CGST and SGST (half the GST each). A sale to another state carries IGST. The customer's state comes from their GSTIN, or from the state they are set to. Walk-in sales are treated as in-state. A credit note keeps the tax type of the invoice it reverses.
+- **Prices with GST included (MRP style).** This is the default. Turn it off in Settings if your prices are entered before GST. Both ways, a line's amount and its GST add up to the amount the customer pays.
+- **Round-off.** Invoice totals are rounded to the rupee by default, and the difference is shown as round-off. Turn this off in Settings if you don't round.
+- **Tax invoice.** Shows the shop's GSTIN and state, the customer's GSTIN, place of supply, HSN and GST per line, CGST/SGST or IGST totals, round-off, and the amount in words (for example "Rupees Nine Hundred Only").
+- **Invoice numbers.** Restart each financial year (1 April to 31 March) and stay within GST's 16-character limit: `SHP/26-27/00001` for invoices, `C-SHP/26-27/0001` for credit notes, `Q-SHP/26-27/0001` for quotes. `SHP` is the terminal code (up to 3 characters, unique per machine).
+- **GSTIN checks.** GSTINs are checked for format, state code and check digit, and PAN for format. A GSTIN fills in the customer's state.
+- **GST returns figures** (Reports → GST returns): output GST on sales less credit notes, input tax credit on purchases from suppliers, the net payable (a negative figure carries forward), the HSN-wise summary by rate, and B2B invoices and credit notes.
+- **Input tax credit.** Purchases are recorded before GST. The GST on a purchase order is counted as input tax credit when the goods are received.
+
+**What to check with your CA before you file**
+
+- **GST rates.** Rates change by notification. Each product's rate is entered by you, and the options offered (0, 0.25, 3, 5, 12, 18, 28%) are only the slabs. Confirm the current rate and HSN code for every item you sell.
+- **The GST return figures are not a filed return.** They show the numbers to file from, in the layout of GSTR-1 and GSTR-3B. Filing itself is done on the GST portal or with your accountant's software.
+- **Units.** The app's unit names (pcs, kg, box) are not GST unit codes (for example NOS, KGS). Map them when you file.
+
+**Not included for India (yet)**
+
+- E-invoicing (IRN and QR code), which is required above the turnover limit for B2B invoices.
+- E-way bills for moving goods.
+- TDS and TCS deduction.
+- Composition-scheme invoices (bill of supply), and reverse-charge invoices.
+- Direct filing to the GST portal.
+
+**Other Indian formats**
+
+- Money shows as ₹1,23,45,678.00 (lakh and crore grouping).
+- Dates show as dd-mm-yyyy.
+- Shop settings: GSTIN, state, PAN, and whether prices include GST.
+
+**Upgrading an earlier build.** This version changes the database layout (GST fields on products, customers, suppliers, sales, credit notes, purchases and lines). Databases created by the earlier, non-India build are not migrated. Start a new database, or export the data you need and re-enter it.
 
 ## Quick start
 
 Requirements: Node.js 22.13 or newer.
 
 ```bash
-npm test                              # 30 tests
+npm test                              # 50 tests
 PORT=8080 node bin/erp-server.js      # hosted server at http://localhost:8080
 ```
 
@@ -42,7 +80,7 @@ Environment variables for the server:
 | `PORT` | `8080` | Port to listen on |
 | `HOST` | `0.0.0.0` | Interface to bind |
 | `ERP_DATA_DIR` | `./data` | Folder for `erp.db` and backups |
-| `ERP_TERMINAL` | `WEB` | Prefix for document numbers (`WEB-INV-000001`). Must be unique per machine. |
+| `ERP_TERMINAL` | `WEB` | Terminal code in document numbers (`WEB/26-27/00001`). Up to 3 characters, unique per machine. |
 
 Run it behind HTTPS (a reverse proxy such as Caddy or nginx) before exposing it on the internet, because it handles passwords and sales data.
 
@@ -57,12 +95,12 @@ npm run build:desktop  # builds an installer with electron-builder
 The desktop reads `config.json` in its user-data folder. It is created on first run:
 
 ```json
-{ "mode": "local", "remoteUrl": "", "terminalCode": "POS1", "syncIntervalMs": 60000 }
+{ "mode": "local", "remoteUrl": "", "terminalCode": "P1", "syncIntervalMs": 60000 }
 ```
 
 - `mode: "local"` runs the full ERP on this computer, with its own database in the user-data folder (`erp.db`). It works with no network at all.
 - `mode: "remote"` opens `remoteUrl` (for example `https://shop.example.com`) in the window instead. Nothing is stored locally.
-- `terminalCode` must be unique for each desktop, so their document numbers never clash.
+- `terminalCode` must be unique for each desktop, so their document numbers never clash. Use up to 3 letters or digits, such as `P1`, `P2`.
 
 The local server listens on `127.0.0.1` on a free port, and only the app's own window talks to it. Only one copy of the app can run at a time, because two copies would share one database file.
 
@@ -120,7 +158,6 @@ Money is stored as integer cents (`2550` means 25.50). Quantities are decimals t
 
 ## Not included (yet)
 
-- Tax filing reports and tax-inclusive pricing. Prices are entered before tax, and tax is added on top.
 - Multiple currencies, bank reconciliation and a full double-entry general ledger. The profit and loss report comes from sales, returns, cost of goods and expenses.
 - Barcode label printing and a hardware receipt printer driver. Receipts print through the normal browser print dialog.
 - Partial goods receipt. A purchase order is received in full.
@@ -135,3 +172,4 @@ npm test
 - `test/core.test.js`: sales, returns, credit limits, receipts, purchasing and average cost, quotes, transfers, low stock, profit and loss, aging, settings.
 - `test/sync.test.js`: two desktops and a hub exchange changes, conflicting edits resolve by last write, offline work is queued, and revoked devices are refused.
 - `test/server.test.js`: setup, login, roles, the sales API, error responses, static files, backups.
+- `test/india.test.js`: GSTIN and PAN checks, CGST/SGST versus IGST, GST-inclusive pricing, round-off, amounts in words, financial-year numbering, credit notes, input tax credit, and the GST return figures.

@@ -11,6 +11,7 @@ const { createApp } = require('../src/server/app');
 const WEB_ROOT = path.join(__dirname, '..', 'src', 'web');
 const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'erp-backups-'));
 const erp = createERP({ terminalCode: 'WEB' });
+erp.settings.save({ round_invoice_totals: false });
 const app = createApp({ erp, webRoot: WEB_ROOT, backupDir });
 let base;
 

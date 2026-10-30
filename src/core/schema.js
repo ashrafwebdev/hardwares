@@ -18,20 +18,20 @@ const SYNCED = {
 
   products: {
     id: 'TEXT', sku: 'TEXT', barcode: 'TEXT', name: 'TEXT', description: 'TEXT',
-    category_id: 'TEXT', supplier_id: 'TEXT', unit: 'TEXT',
+    category_id: 'TEXT', supplier_id: 'TEXT', unit: 'TEXT', hsn_code: 'TEXT',
     cost: 'INTEGER', price: 'INTEGER', tax_rate: 'REAL', reorder_level: 'REAL',
     location: 'TEXT', active: 'INTEGER', created_at: 'TEXT',
   },
 
   customers: {
     id: 'TEXT', code: 'TEXT', name: 'TEXT', phone: 'TEXT', email: 'TEXT', address: 'TEXT',
-    tax_no: 'TEXT', credit_limit: 'INTEGER', opening_balance: 'INTEGER', active: 'INTEGER',
+    gstin: 'TEXT', state_code: 'TEXT', pan: 'TEXT', credit_limit: 'INTEGER', opening_balance: 'INTEGER', active: 'INTEGER',
     created_at: 'TEXT',
   },
 
   suppliers: {
     id: 'TEXT', code: 'TEXT', name: 'TEXT', phone: 'TEXT', email: 'TEXT', address: 'TEXT',
-    tax_no: 'TEXT', opening_balance: 'INTEGER', active: 'INTEGER', created_at: 'TEXT',
+    gstin: 'TEXT', state_code: 'TEXT', pan: 'TEXT', opening_balance: 'INTEGER', active: 'INTEGER', created_at: 'TEXT',
   },
 
   // Append-only. Stock on hand is the sum of qty per product and warehouse.
@@ -43,7 +43,9 @@ const SYNCED = {
   // type: invoice | return | quote. status: posted | open | converted.
   sales_docs: {
     id: 'TEXT', number: 'TEXT', type: 'TEXT', status: 'TEXT', date: 'TEXT',
-    customer_id: 'TEXT', warehouse_id: 'TEXT', ref_doc_id: 'TEXT',
+    customer_id: 'TEXT', customer_gstin: 'TEXT', warehouse_id: 'TEXT', ref_doc_id: 'TEXT',
+    place_of_supply: 'TEXT', is_interstate: 'INTEGER', round_off: 'INTEGER',
+    cgst_total: 'INTEGER', sgst_total: 'INTEGER', igst_total: 'INTEGER',
     subtotal: 'INTEGER', tax_total: 'INTEGER', total: 'INTEGER',
     payment_method: 'TEXT', note: 'TEXT', created_by: 'TEXT', created_at: 'TEXT',
   },
@@ -51,19 +53,22 @@ const SYNCED = {
   sales_lines: {
     id: 'TEXT', doc_id: 'TEXT', product_id: 'TEXT', description: 'TEXT', qty: 'REAL',
     unit_price: 'INTEGER', discount_pct: 'REAL', unit_cost: 'INTEGER', tax_rate: 'REAL',
-    net: 'INTEGER', tax_amount: 'INTEGER', total: 'INTEGER',
+    net: 'INTEGER', tax_amount: 'INTEGER', total: 'INTEGER', hsn_code: 'TEXT',
+    cgst: 'INTEGER', sgst: 'INTEGER', igst: 'INTEGER',
   },
 
   // status: draft | ordered | received | cancelled.
   purchase_docs: {
     id: 'TEXT', number: 'TEXT', status: 'TEXT', date: 'TEXT', supplier_id: 'TEXT',
     warehouse_id: 'TEXT', subtotal: 'INTEGER', tax_total: 'INTEGER', total: 'INTEGER',
+    is_interstate: 'INTEGER', cgst_total: 'INTEGER', sgst_total: 'INTEGER', igst_total: 'INTEGER',
     received_date: 'TEXT', note: 'TEXT', created_by: 'TEXT', created_at: 'TEXT',
   },
 
   purchase_lines: {
     id: 'TEXT', doc_id: 'TEXT', product_id: 'TEXT', description: 'TEXT', qty: 'REAL',
     unit_cost: 'INTEGER', tax_rate: 'REAL', net: 'INTEGER', tax_amount: 'INTEGER', total: 'INTEGER',
+    hsn_code: 'TEXT', cgst: 'INTEGER', sgst: 'INTEGER', igst: 'INTEGER',
   },
 
   // kind: receipt (money in from customer) | payment (money out to supplier) | refund (money out to customer).

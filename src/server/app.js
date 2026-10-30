@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { ERPError, ensure } = require('../core/util');
+const { STATES, GST_RATE_OPTIONS } = require('../core/india');
 
 const ALL = ['admin', 'manager', 'cashier'];
 const MANAGE = ['admin', 'manager'];
@@ -41,6 +42,8 @@ function buildRoutes(erp) {
   const q = (ctx, key) => ctx.query.get(key) || undefined;
 
   // ---- setup, auth, general -------------------------------------------------
+  // Lists the web app needs for dropdowns: Indian states and GST rate slabs.
+  add('GET', '/api/meta', null, () => ({ states: STATES, gstRates: GST_RATE_OPTIONS }));
   add('GET', '/api/status', null, () => ({
     needsSetup: !erp.auth.hasUsers(),
     terminal: erp.terminal(),
@@ -154,6 +157,7 @@ function buildRoutes(erp) {
   }));
   add('GET', '/api/reports/top-products', MANAGE, (ctx) => erp.reports.topProducts({ from: q(ctx, 'from'), to: q(ctx, 'to') }));
   add('GET', '/api/reports/profit', MANAGE, (ctx) => erp.reports.profitAndLoss({ from: q(ctx, 'from'), to: q(ctx, 'to') }));
+  add('GET', '/api/reports/gst', MANAGE, (ctx) => erp.reports.gstReturn({ from: q(ctx, 'from'), to: q(ctx, 'to') }));
   add('GET', '/api/reports/valuation', MANAGE, () => erp.reports.stockValuation());
   add('GET', '/api/reports/receivables', MANAGE, () => erp.reports.receivables());
   add('GET', '/api/reports/payables', MANAGE, () => erp.reports.payables());

@@ -2,6 +2,32 @@
 
 const { ensure, text, ref, flag, cents, qtyOf, rate, pick } = require('./util');
 const { customerBalance, supplierBalance } = require('./ledger');
+const { STATE_NAMES, isValidGstin, isValidPan, stateOfGstin } = require('./india');
+
+// HSN codes are 4, 6 or 8 digits. Required on GST invoices for goods.
+const hsnField = (v) => {
+  const code = text(v).replace(/\s/g, '');
+  ensure(!code || /^\d{4}(\d{2}(\d{2})?)?$/.test(code), 'HSN code must be 4, 6 or 8 digits');
+  return code || null;
+};
+
+const gstinField = (v) => {
+  const gstin = text(v).toUpperCase();
+  ensure(!gstin || isValidGstin(gstin), 'GSTIN is not valid. Check the 15 characters.');
+  return gstin || null;
+};
+
+const stateField = (v) => {
+  const code = text(v);
+  ensure(!code || STATE_NAMES[code], 'Choose a valid state');
+  return code || null;
+};
+
+const panField = (v) => {
+  const pan = text(v).toUpperCase();
+  ensure(!pan || isValidPan(pan), 'PAN must be 10 characters, like ABCDE1234F');
+  return pan || null;
+};
 
 // Categories, warehouses, products, customers and suppliers.
 function createMaster({ db, repo, tx, settings, inventory }) {
@@ -91,6 +117,7 @@ function createMaster({ db, repo, tx, settings, inventory }) {
         category_id: ref,
         supplier_id: ref,
         unit: (v) => text(v) || 'pcs',
+        hsn_code: hsnField,
         cost: (v) => cents(v, 'Cost'),
         price: (v) => cents(v, 'Price'),
         tax_rate: (v) => rate(v),
@@ -122,13 +149,17 @@ function createMaster({ db, repo, tx, settings, inventory }) {
         phone: text,
         email: text,
         address: text,
-        tax_no: text,
+        gstin: gstinField,
+        state_code: stateField,
+        pan: panField,
         opening_balance: (v) => cents(v, 'Opening balance'),
         active: flag,
         ...extra,
       });
       const row = { active: 1, opening_balance: 0, credit_limit: 0, ...(existing || {}), ...patch };
       ensure(text(row.name), 'Name is required');
+      // The state always follows the GSTIN, because the first two digits of a GSTIN are its state code.
+      if (row.gstin) row.state_code = stateOfGstin(row.gstin);
       if (row.code) ensure(!duplicate(table, 'code', row.code, data.id), 'Code already exists', 409);
       return repo.save(table, { ...row, id: data.id, created_at: existing?.created_at });
     });

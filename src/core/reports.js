@@ -140,8 +140,82 @@ function createReports({ db, repo, inventory, sales }) {
     };
   }
 
+  // GST figures in the layout of GSTR-1 (sales) and GSTR-3B (summary). These are the
+  // numbers to file from, not a filed return: check them with your CA before filing.
+  function gstReturn({ from = '0000-01-01', to = '9999-12-31' } = {}) {
+    const outward = db.prepare(
+      `SELECT COALESCE(SUM(${sign('d')} * d.subtotal), 0) AS taxable,
+              COALESCE(SUM(${sign('d')} * d.cgst_total), 0) AS cgst,
+              COALESCE(SUM(${sign('d')} * d.sgst_total), 0) AS sgst,
+              COALESCE(SUM(${sign('d')} * d.igst_total), 0) AS igst
+         FROM sales_docs d WHERE ${POSTED_SALES}`,
+    ).get(from, to);
+    const inward = db.prepare(
+      `SELECT COALESCE(SUM(subtotal), 0) AS taxable, COALESCE(SUM(cgst_total), 0) AS cgst,
+              COALESCE(SUM(sgst_total), 0) AS sgst, COALESCE(SUM(igst_total), 0) AS igst
+         FROM purchase_docs
+        WHERE deleted = 0 AND status = 'received' AND received_date BETWEEN ? AND ?`,
+    ).get(from, to);
+
+    const hsn = db.prepare(
+      `SELECT COALESCE(l.hsn_code, '') AS hsn_code, MAX(p.unit) AS unit, l.tax_rate,
+              SUM(${sign('d')} * l.qty) AS qty,
+              SUM(${sign('d')} * l.net) AS taxable,
+              SUM(${sign('d')} * l.cgst) AS cgst,
+              SUM(${sign('d')} * l.sgst) AS sgst,
+              SUM(${sign('d')} * l.igst) AS igst,
+              SUM(${sign('d')} * l.tax_amount) AS tax
+         FROM sales_lines l
+         JOIN sales_docs d ON d.id = l.doc_id
+         LEFT JOIN products p ON p.id = l.product_id
+        WHERE l.deleted = 0 AND ${POSTED_SALES}
+        GROUP BY COALESCE(l.hsn_code, ''), l.tax_rate ORDER BY COALESCE(l.hsn_code, ''), l.tax_rate`,
+    ).all(from, to);
+
+    const documentsWithGstin = (type) => db.prepare(
+      `SELECT d.number, d.date, d.customer_gstin, c.name AS customer_name, d.place_of_supply,
+              d.is_interstate, ${sign('d')} * d.subtotal AS taxable, ${sign('d')} * d.tax_total AS tax,
+              ${sign('d')} * d.total AS total
+         FROM sales_docs d LEFT JOIN customers c ON c.id = d.customer_id
+        WHERE d.deleted = 0 AND d.status = 'posted' AND d.type = ? AND d.customer_gstin IS NOT NULL
+          AND d.date BETWEEN ? AND ?
+        ORDER BY d.date, d.number`,
+    ).all(type, from, to);
+
+    const b2c = db.prepare(
+      `SELECT COUNT(*) AS invoices, COALESCE(SUM(subtotal), 0) AS taxable,
+              COALESCE(SUM(tax_total), 0) AS tax, COALESCE(SUM(total), 0) AS total
+         FROM sales_docs
+        WHERE deleted = 0 AND status = 'posted' AND type = 'invoice' AND customer_gstin IS NULL
+          AND date BETWEEN ? AND ?`,
+    ).get(from, to);
+
+    const outwardTax = Math.round(outward.cgst + outward.sgst + outward.igst);
+    const inputTax = Math.round(inward.cgst + inward.sgst + inward.igst);
+    return {
+      from,
+      to,
+      outward: {
+        taxable: Math.round(outward.taxable), cgst: Math.round(outward.cgst),
+        sgst: Math.round(outward.sgst), igst: Math.round(outward.igst), tax: outwardTax,
+      },
+      input_tax_credit: {
+        taxable: Math.round(inward.taxable), cgst: Math.round(inward.cgst),
+        sgst: Math.round(inward.sgst), igst: Math.round(inward.igst), tax: inputTax,
+      },
+      net_payable: outwardTax - inputTax,
+      hsn: hsn.map((r) => ({
+        ...r, hsn_code: r.hsn_code || 'Not set', taxable: Math.round(r.taxable), cgst: Math.round(r.cgst),
+        sgst: Math.round(r.sgst), igst: Math.round(r.igst), tax: Math.round(r.tax),
+      })),
+      b2b_invoices: documentsWithGstin('invoice'),
+      b2b_credit_notes: documentsWithGstin('return'),
+      b2c: { invoices: b2c.invoices, taxable: b2c.taxable, tax: b2c.tax, total: b2c.total },
+    };
+  }
+
   return {
-    salesSummary, topProducts, profitAndLoss, stockValuation, receivables, payables, dashboard, netSales,
+    gstReturn, salesSummary, topProducts, profitAndLoss, stockValuation, receivables, payables, dashboard, netSales,
     customerStatement, supplierStatement,
   };
 }

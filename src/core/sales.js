@@ -2,13 +2,20 @@
 
 const { ensure, localDate, nowIso, text, cents, qtyOf, rate, sum } = require('./util');
 const { customerBalance } = require('./ledger');
+const { splitTax, splitAmount, stateOfGstin, amountInWords } = require('./india');
 
-const DOC_PREFIX = { invoice: 'INV', return: 'RET', quote: 'QTE' };
-const money = (cents) => (cents / 100).toFixed(2);
+// Number prefixes. Invoices have no prefix so they stay within the 16-character GST limit.
+const DOC = {
+  invoice: { prefix: '', width: 5 },
+  return: { prefix: 'C-', width: 4 },
+  quote: { prefix: 'Q-', width: 4 },
+};
+const RECEIPT_PREFIX = { receipt: 'RC-', refund: 'RF-' };
+const money = (c) => (c / 100).toFixed(2);
 
-// Sales invoices (point of sale and credit), returns against invoices, and quotes.
-// Totals are computed here, never trusted from the client.
-function createSales({ db, repo, tx, nextNumber, inventory }) {
+// Sales invoices (point of sale and credit), credit notes against invoices, and quotes.
+// Every total, tax split and round-off is computed here, never taken from the client.
+function createSales({ db, repo, tx, nextNumber, inventory, settings }) {
   function requireProduct(id) {
     const product = repo.find('products', id);
     ensure(product, 'Product not found', 404);
@@ -29,8 +36,20 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
     return warehouse.id;
   }
 
+  // Place of supply: the customer's state (from GSTIN or chosen state).
+  // Walk-in sales have no state, so they are treated as in-state.
+  function placeOfSupply(customer) {
+    if (!customer) return null;
+    return stateOfGstin(customer.gstin) || customer.state_code || null;
+  }
+
+  function isInterstate(placeOfSupplyCode) {
+    const seller = settings.get('company_state_code');
+    return !!(placeOfSupplyCode && seller && placeOfSupplyCode !== seller);
+  }
+
   // Price one line. Anything the caller omits comes from the product.
-  function priceLine(product, input) {
+  function priceLine(product, input, { inclusive, interstate }) {
     const qty = qtyOf(input.qty);
     ensure(qty > 0, `Quantity for ${product.name} must be greater than zero`);
     const unitPrice = cents(input.unitPrice ?? product.price, 'Unit price');
@@ -38,27 +57,43 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
     const discount = Number(input.discountPct ?? 0);
     ensure(discount >= 0 && discount <= 100, 'Discount must be between 0 and 100%');
     const taxRate = rate(input.taxRate ?? product.tax_rate);
-    const net = Math.round(qty * unitPrice * (1 - discount / 100));
-    const taxAmount = Math.round((net * taxRate) / 100);
+    const amount = Math.round(qty * unitPrice * (1 - discount / 100));
+    const { taxable, tax } = splitAmount(amount, taxRate, inclusive);
+    const split = splitTax(tax, interstate);
     return {
       product_id: product.id,
       description: product.name,
+      hsn_code: product.hsn_code || null,
       qty,
       unit_price: unitPrice,
       discount_pct: discount,
       unit_cost: input.unitCost ?? product.cost,
       tax_rate: taxRate,
-      net,
-      tax_amount: taxAmount,
-      total: net + taxAmount,
+      net: taxable,
+      tax_amount: tax,
+      cgst: split.cgst,
+      sgst: split.sgst,
+      igst: split.igst,
+      total: taxable + tax,
     };
   }
 
   function totalsOf(lines) {
-    return lines.reduce(
-      (t, l) => ({ subtotal: t.subtotal + l.net, tax_total: t.tax_total + l.tax_amount, total: t.total + l.total }),
-      { subtotal: 0, tax_total: 0, total: 0 },
-    );
+    return lines.reduce((t, l) => ({
+      subtotal: t.subtotal + l.net,
+      tax_total: t.tax_total + l.tax_amount,
+      cgst_total: t.cgst_total + l.cgst,
+      sgst_total: t.sgst_total + l.sgst,
+      igst_total: t.igst_total + l.igst,
+      total: t.total + l.total,
+    }), { subtotal: 0, tax_total: 0, cgst_total: 0, sgst_total: 0, igst_total: 0, total: 0 });
+  }
+
+  // Indian invoices usually round the total to the rupee. The difference is shown as round-off.
+  function withRoundOff(totals) {
+    if (!settings.get('round_invoice_totals')) return { ...totals, round_off: 0 };
+    const rounded = Math.round(totals.total / 100) * 100;
+    return { ...totals, total: rounded, round_off: rounded - totals.total };
   }
 
   function normalizePayments(list = []) {
@@ -71,9 +106,13 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
       .filter((p) => p.amount > 0);
   }
 
-  function buildLines(inputs) {
+  function pricingOptions(interstate) {
+    return { inclusive: !!settings.get('prices_include_gst'), interstate };
+  }
+
+  function buildLines(inputs, options) {
     ensure(Array.isArray(inputs) && inputs.length, 'Add at least one item');
-    return inputs.map((input) => priceLine(requireProduct(input.productId), input));
+    return inputs.map((input) => priceLine(requireProduct(input.productId), input, options));
   }
 
   function assertCredit(customer, due) {
@@ -81,21 +120,29 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
     const balance = customerBalance(db, customer.id);
     ensure(
       balance + due <= customer.credit_limit,
-      `Credit limit exceeded for ${customer.name}: limit ${money(customer.credit_limit)}, balance ${money(balance)}`,
+      `Credit limit exceeded for ${customer.name}: limit ₹${money(customer.credit_limit)}, balance ₹${money(balance)}`,
     );
   }
 
-  function saveDocument({ type, status, date, customer, warehouseId, refDocId = null, lines, totals, payments, note, by }) {
+  function saveDocument({ type, status, date, customer, warehouseId, refDocId = null, lines, totals, payments, note, by, supply }) {
+    const { prefix, width } = DOC[type];
     const doc = repo.save('sales_docs', {
-      number: nextNumber(DOC_PREFIX[type]),
+      number: nextNumber(prefix, date, width),
       type,
       status,
       date,
       customer_id: customer ? customer.id : null,
+      customer_gstin: customer ? customer.gstin || null : null,
       warehouse_id: warehouseId,
       ref_doc_id: refDocId,
+      place_of_supply: supply.placeOfSupply,
+      is_interstate: supply.interstate ? 1 : 0,
       subtotal: totals.subtotal,
       tax_total: totals.tax_total,
+      cgst_total: totals.cgst_total,
+      sgst_total: totals.sgst_total,
+      igst_total: totals.igst_total,
+      round_off: totals.round_off,
       total: totals.total,
       payment_method: payments.map((p) => p.method).join(', ') || null,
       note: text(note),
@@ -109,7 +156,7 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
   function recordPayments({ docId, customer, payments, date, by, kind }) {
     for (const payment of payments) {
       repo.save('payments', {
-        number: nextNumber(kind === 'refund' ? 'RFD' : 'RCT'),
+        number: nextNumber(kind === 'refund' ? RECEIPT_PREFIX.refund : RECEIPT_PREFIX.receipt, date, 4),
         kind,
         party_type: customer ? 'customer' : null,
         party_id: customer ? customer.id : null,
@@ -128,8 +175,10 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
       const customer = input.customerId ? requireCustomer(input.customerId) : null;
       const warehouseId = resolveWarehouse(input.warehouseId);
       const date = input.date || localDate();
-      const lines = buildLines(input.lines);
-      const totals = totalsOf(lines);
+      const supply = { placeOfSupply: placeOfSupply(customer) };
+      supply.interstate = isInterstate(supply.placeOfSupply);
+      const lines = buildLines(input.lines, pricingOptions(supply.interstate));
+      const totals = withRoundOff(totalsOf(lines));
       const payments = normalizePayments(input.payments);
       const paid = sum(payments.map((p) => p.amount));
       ensure(paid <= totals.total, 'Payments are more than the total');
@@ -141,7 +190,7 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
 
       const doc = saveDocument({
         type: 'invoice', status: 'posted', date, customer, warehouseId, lines, totals, payments,
-        note: input.note, by: input.by,
+        note: input.note, by: input.by, supply,
       });
       for (const line of lines) {
         inventory.postMovement({
@@ -154,6 +203,7 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
     });
   }
 
+  // Credit note: the original invoice decides whether tax is CGST+SGST or IGST.
   function createReturn({ invoiceId, lines: inputs, refunds = [], date, note, by }) {
     return tx(() => {
       const invoice = repo.find('sales_docs', invoiceId);
@@ -166,6 +216,7 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
           WHERE d.ref_doc_id = ? AND d.type = 'return' AND d.deleted = 0 AND l.deleted = 0 AND l.product_id = ?`,
       ).get(invoice.id, productId).n;
 
+      const interstate = !!invoice.is_interstate;
       const lines = inputs.map((input) => {
         const matching = originals.filter((l) => l.product_id === input.productId);
         ensure(matching.length, 'That product is not on this invoice');
@@ -174,26 +225,27 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
         const qty = qtyOf(input.qty, 'Return quantity');
         ensure(qty > 0 && qty <= available + 1e-9, `Only ${available} can still be returned for ${matching[0].description}`);
         const original = matching[0];
-        return priceLine({ id: original.product_id, name: original.description }, {
+        return priceLine({ id: original.product_id, name: original.description, hsn_code: original.hsn_code }, {
           qty,
           unitPrice: original.unit_price,
           discountPct: original.discount_pct,
           taxRate: original.tax_rate,
           unitCost: original.unit_cost,
-        });
+        }, pricingOptions(interstate));
       });
 
       const day = date || localDate();
-      const totals = totalsOf(lines);
+      const totals = withRoundOff(totalsOf(lines));
       const refund = normalizePayments(refunds);
       const refunded = sum(refund.map((r) => r.amount));
-      ensure(refunded <= totals.total, 'Refund is more than the return total');
+      ensure(refunded <= totals.total, 'Refund is more than the credit note total');
       const customer = invoice.customer_id ? repo.find('customers', invoice.customer_id) : null;
       if (!customer) ensure(refunded === totals.total, 'Walk-in returns must be refunded in full');
 
       const doc = saveDocument({
         type: 'return', status: 'posted', date: day, customer, warehouseId: invoice.warehouse_id,
         refDocId: invoice.id, lines, totals, payments: refund, note, by,
+        supply: { placeOfSupply: invoice.place_of_supply, interstate },
       });
       for (const line of lines) {
         inventory.postMovement({
@@ -209,11 +261,13 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
   function createQuote(input = {}) {
     return tx(() => {
       const customer = input.customerId ? requireCustomer(input.customerId) : null;
-      const lines = buildLines(input.lines);
+      const supply = { placeOfSupply: placeOfSupply(customer) };
+      supply.interstate = isInterstate(supply.placeOfSupply);
+      const lines = buildLines(input.lines, pricingOptions(supply.interstate));
       const doc = saveDocument({
         type: 'quote', status: 'open', date: input.date || localDate(), customer,
-        warehouseId: resolveWarehouse(input.warehouseId), lines, totals: totalsOf(lines), payments: [],
-        note: input.note, by: input.by,
+        warehouseId: resolveWarehouse(input.warehouseId), lines, totals: withRoundOff(totalsOf(lines)),
+        payments: [], note: input.note, by: input.by, supply,
       });
       return getSale(doc.id);
     });
@@ -280,6 +334,12 @@ function createSales({ db, repo, tx, nextNumber, inventory }) {
       returns,
       settled,
       due,
+      amount_in_words: amountInWords(doc.total),
+      seller: {
+        name: settings.get('company_name'),
+        gstin: settings.get('company_gstin'),
+        state_code: settings.get('company_state_code'),
+      },
     };
   }
 

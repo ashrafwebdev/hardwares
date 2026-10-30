@@ -18,7 +18,7 @@ const { createERP } = require('../src/core');
 const { createApp } = require('../src/server/app');
 
 const WEB_ROOT = path.join(__dirname, '..', 'src', 'web');
-const DEFAULT_CONFIG = { mode: 'local', remoteUrl: '', terminalCode: 'POS1', syncIntervalMs: 60000 };
+const DEFAULT_CONFIG = { mode: 'local', remoteUrl: '', terminalCode: 'P1', syncIntervalMs: 60000 };
 const SYNC_INTERVAL_FLOOR_MS = 15000;
 
 let mainWindow = null;

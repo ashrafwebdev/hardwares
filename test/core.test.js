@@ -10,6 +10,8 @@ let warehouseId;
 beforeEach(() => {
   erp = createERP({ terminalCode: 'T1' });
   warehouseId = erp.master.listWarehouses()[0].id;
+  // These tests check plain arithmetic. India-specific pricing is tested in india.test.js.
+  erp.settings.save({ prices_include_gst: false, round_invoice_totals: false, company_state_code: '27' });
 });
 afterEach(() => erp.close());
 
@@ -45,7 +47,7 @@ test('money is computed in integer cents with tax and discount', () => {
   assert.equal(sale.tax_total, 270);
   assert.equal(sale.total, 2970);
   assert.equal(sale.due, 0);
-  assert.equal(sale.number, 'T1-INV-000001');
+  assert.match(sale.number, /^T1\/\d{2}-\d{2}\/00001$/);
 });
 
 test('cannot sell more than is on hand, unless negative stock is allowed', () => {

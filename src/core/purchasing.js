@@ -1,10 +1,11 @@
 'use strict';
 
 const { ensure, localDate, nowIso, text, cents, qtyOf, rate, sum } = require('./util');
+const { splitTax, stateOfGstin } = require('./india');
 
 // Purchase orders: draft -> ordered -> received. Receiving posts stock in and
 // moves the product's average cost. Cancelling is allowed until receipt.
-function createPurchasing({ db, repo, tx, nextNumber, inventory }) {
+function createPurchasing({ db, repo, tx, nextNumber, inventory, settings }) {
   function requireSupplier(id) {
     const supplier = repo.find('suppliers', id);
     ensure(supplier, 'Supplier not found', 404);
@@ -17,7 +18,8 @@ function createPurchasing({ db, repo, tx, nextNumber, inventory }) {
     return order;
   }
 
-  function priceLines(inputs) {
+  // Purchases are priced before GST; the GST paid is recorded as input tax credit.
+  function priceLines(inputs, interstate) {
     ensure(Array.isArray(inputs) && inputs.length, 'Add at least one item');
     return inputs.map((input) => {
       const product = repo.find('products', input.productId);
@@ -29,9 +31,11 @@ function createPurchasing({ db, repo, tx, nextNumber, inventory }) {
       const taxRate = rate(input.taxRate ?? product.tax_rate);
       const net = Math.round(qty * unitCost);
       const taxAmount = Math.round((net * taxRate) / 100);
+      const split = splitTax(taxAmount, interstate);
       return {
-        product_id: product.id, description: product.name, qty, unit_cost: unitCost,
-        tax_rate: taxRate, net, tax_amount: taxAmount, total: net + taxAmount,
+        product_id: product.id, description: product.name, hsn_code: product.hsn_code || null,
+        qty, unit_cost: unitCost, tax_rate: taxRate, net, tax_amount: taxAmount,
+        cgst: split.cgst, sgst: split.sgst, igst: split.igst, total: net + taxAmount,
       };
     });
   }
@@ -40,8 +44,18 @@ function createPurchasing({ db, repo, tx, nextNumber, inventory }) {
     return {
       subtotal: sum(lines.map((l) => l.net)),
       tax_total: sum(lines.map((l) => l.tax_amount)),
+      cgst_total: sum(lines.map((l) => l.cgst)),
+      sgst_total: sum(lines.map((l) => l.sgst)),
+      igst_total: sum(lines.map((l) => l.igst)),
       total: sum(lines.map((l) => l.total)),
     };
+  }
+
+  // Goods from a supplier in another state carry IGST; otherwise CGST and SGST.
+  function isInterstateSupplier(supplier) {
+    const from = stateOfGstin(supplier.gstin) || supplier.state_code;
+    const ours = settings.get('company_state_code');
+    return !!(from && ours && from !== ours);
   }
 
   function listLines(docId) {
@@ -63,17 +77,22 @@ function createPurchasing({ db, repo, tx, nextNumber, inventory }) {
       const warehouse = repo.find('warehouses', input.warehouseId ?? existing?.warehouse_id)
         || db.prepare('SELECT * FROM warehouses WHERE deleted = 0 ORDER BY rowid LIMIT 1').get();
       ensure(warehouse, 'Warehouse not found', 404);
-      const lines = priceLines(input.lines);
+      const interstate = isInterstateSupplier(supplier);
+      const lines = priceLines(input.lines, interstate);
       const totals = totalsOf(lines);
       const doc = repo.save('purchase_docs', {
         id: existing?.id,
-        number: existing ? existing.number : nextNumber('PO'),
+        number: existing ? existing.number : nextNumber('PO-', input.date || localDate(), 4),
         status: 'draft',
         date: input.date || existing?.date || localDate(),
         supplier_id: supplier.id,
         warehouse_id: warehouse.id,
+        is_interstate: interstate ? 1 : 0,
         subtotal: totals.subtotal,
         tax_total: totals.tax_total,
+        cgst_total: totals.cgst_total,
+        sgst_total: totals.sgst_total,
+        igst_total: totals.igst_total,
         total: totals.total,
         note: text(input.note),
         created_by: existing?.created_by || input.by || 'system',
