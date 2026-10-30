@@ -1,0 +1,119 @@
+name: Build desktop installers
+
+# Tests run on every push and pull request.
+# Installers are built for Windows, macOS and Linux on version tags (v1.2.3)
+# and on manual runs. Pushing a version tag also creates a GitHub release
+# with the installers attached.
+#
+# Signing is optional. Without the secrets below the installers are unsigned:
+#   Windows: WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD (a .pfx code-signing certificate)
+#   macOS:   MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD (a Developer ID .p12 certificate)
+#            plus APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID for notarization
+# The macOS build also needs repository variable SIGN_MACOS set to "true".
+
+on:
+  push:
+    tags: ['v*']
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run tests
+        run: npm test
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux
+            os: ubuntu-latest
+            builder_args: --linux AppImage
+            files: dist/*.AppImage
+          - label: windows
+            os: windows-latest
+            builder_args: --win nsis --x64
+            files: dist/*.exe
+          - label: macos
+            os: macos-latest
+            builder_args: --mac dmg zip --arm64 --x64
+            files: dist/*.dmg dist/*.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Electron's install script downloads the Electron binary that the packager needs,
+      # so scripts run here (unlike the test job).
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build installer
+        shell: bash
+        env:
+          # Only sign when certificates are provided. Otherwise the build stays unsigned.
+          CSC_LINK: ${{ matrix.label == 'macos' && secrets.MAC_CSC_LINK || matrix.label == 'windows' && secrets.WIN_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.label == 'macos' && secrets.MAC_CSC_KEY_PASSWORD || matrix.label == 'windows' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.label == 'macos' && vars.SIGN_MACOS == 'true' && 'true' || 'false' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder ${{ matrix.builder_args }} --publish never
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.label }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          path: installers
+          merge-multiple: true
+
+      - name: Create release with installers
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

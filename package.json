@@ -30,13 +30,31 @@
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${name}-${version}-${os}-${arch}-setup.${ext}"
     },
     "mac": {
-      "target": "dmg"
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.business"
     },
     "linux": {
-      "target": "AppImage"
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    },
+    "npmRebuild": false,
+    "asar": true,
+    "artifactName": "${name}-${version}-${os}-${arch}.${ext}",
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     }
-  }
+  },
+  "author": "Hardware ERP contributors"
 }

@@ -120,6 +120,32 @@ The desktop reads `config.json` in its user-data folder. It is created on first 
 
 The local server listens on `127.0.0.1` on a free port, and only the app's own window talks to it. Only one copy of the app can run at a time, because two copies would share one database file.
 
+## Building installers (Windows, macOS, Linux)
+
+The workflow `.github/workflows/build-desktop.yml` builds the desktop app for all three systems:
+
+| Platform | Installer |
+| --- | --- |
+| Windows (x64) | `hardware-erp-<version>-win-x64-setup.exe` (NSIS installer) |
+| macOS (Apple Silicon and Intel) | `hardware-erp-<version>-mac-arm64.dmg`, `…-mac-x64.dmg`, and matching `.zip` |
+| Linux (x64) | `hardware-erp-<version>-linux-x86_64.AppImage` |
+
+**To release:** update `version` in `package.json`, commit, then push a tag with the same version:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The workflow runs the tests, builds all three installers and attaches them to a GitHub release for that tag. Every push and pull request runs the tests only. You can also run the build by hand from the Actions tab (**Run workflow**). Its installers are kept as workflow artifacts for 30 days.
+
+**Signing (optional).** Without signing secrets the installers are unsigned. Windows will show a "Windows protected your PC" warning, and macOS will refuse to open the app until it is allowed in System Settings. To sign:
+
+- Windows: add the secrets `WIN_CSC_LINK` (a base64 or URL link to your `.pfx` code-signing certificate) and `WIN_CSC_KEY_PASSWORD`.
+- macOS: add `MAC_CSC_LINK` (your Developer ID `.p12`), `MAC_CSC_KEY_PASSWORD`, and for notarization `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`. Also set the repository variable `SIGN_MACOS` to `true`.
+
+**Local builds.** `npm install`, then `npm run build:desktop` builds for the system you are on, into `dist/`.
+
 ## Working offline and syncing with a hosted server
 
 Each machine keeps a full copy of the data. Sync is optional and can be turned on at any time.
